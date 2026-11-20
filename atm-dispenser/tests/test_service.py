@@ -1,0 +1,359 @@
+"""Integration tests for the HTTP service: a real server on a free port, real HTTP requests.
+
+Covers the functional API, every error path, security behaviour (limits, headers, API key,
+no stack traces) and concurrent withdrawals over HTTP.
+"""
+
+import http.client
+import json
+import logging
+import socket
+import threading
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
+
+from atm import CashDispenser
+from atm.service import (
+    MAX_BODY_BYTES,
+    SECURITY_HEADERS,
+    ConfigError,
+    JsonLogFormatter,
+    create_server,
+    load_config,
+)
+
+API_KEY = "test-key-0123456789abcdef"
+
+
+class RunningServer:
+    """Start the service in a background thread on a free port; stop it afterwards."""
+
+    def __init__(self, inventory=None, api_key=None, max_withdrawal=200_000):
+        self.atm = CashDispenser(inventory or {500: 8, 200: 10, 100: 20}, max_withdrawal=max_withdrawal)
+        self.server = create_server(self.atm, "127.0.0.1", 0, api_key)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05},
+                                       daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+    def request(self, method, path, body=None, headers=None, raw_body=None):
+        """Send one request. Returns (status, json body or None, response headers)."""
+        headers = dict(headers or {})
+        data = raw_body
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers.setdefault("Content-Type", "application/json")
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            connection.request(method, path, body=data, headers=headers)
+            response = connection.getresponse()
+            text = response.read().decode()
+            parsed = json.loads(text) if text else None
+            return response.status, parsed, {k.lower(): v for k, v in response.getheaders()}
+        finally:
+            connection.close()
+
+    def withdraw(self, amount, headers=None):
+        return self.request("POST", "/withdrawals", {"amount": amount}, headers)
+
+
+# ------------------------------------------------------------------------- functional tests
+
+class HealthAndInventoryTests(unittest.TestCase):
+    def test_health_and_readiness(self):
+        with RunningServer() as srv:
+            self.assertEqual(srv.request("GET", "/health")[:2], (200, {"status": "ok"}))
+            self.assertEqual(srv.request("GET", "/ready")[:2], (200, {"status": "ready"}))
+
+    def test_inventory(self):
+        with RunningServer() as srv:
+            status, body, _ = srv.request("GET", "/inventory")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, {"inventory": {"500": 8, "200": 10, "100": 20}, "total_cash": 8000})
+
+    def test_openapi_document_lists_every_endpoint(self):
+        with RunningServer() as srv:
+            status, body, _ = srv.request("GET", "/openapi.json")
+            self.assertEqual(status, 200)
+            self.assertEqual(body["openapi"], "3.0.3")
+            self.assertEqual(set(body["paths"]),
+                             {"/health", "/ready", "/inventory", "/withdrawals", "/openapi.json"})
+
+    def test_trailing_slash_and_query_string_are_ignored(self):
+        with RunningServer() as srv:
+            self.assertEqual(srv.request("GET", "/health/")[0], 200)
+            self.assertEqual(srv.request("GET", "/inventory?x=1")[0], 200)
+
+
+class WithdrawalApiTests(unittest.TestCase):
+    def test_example_from_the_brief(self):
+        with RunningServer() as srv:
+            status, body, _ = srv.withdraw(2700)
+            self.assertEqual(status, 200)
+            self.assertEqual(body, {
+                "amount": 2700,
+                "dispensed": {"500": 5, "200": 1},
+                "total_notes": 6,
+                "inventory": {"500": 3, "200": 9, "100": 20},
+            })
+            self.assertEqual(srv.request("GET", "/inventory")[1]["inventory"], {"500": 3, "200": 9, "100": 20})
+
+    def test_greedy_trap(self):
+        with RunningServer({4: 1, 3: 2}) as srv:
+            self.assertEqual(srv.withdraw(6)[1]["dispensed"], {"3": 2})
+
+    def test_amount_as_text_is_accepted(self):
+        with RunningServer() as srv:
+            self.assertEqual(srv.withdraw("2700")[0], 200)
+
+    def test_cannot_dispense_returns_422_and_keeps_inventory(self):
+        with RunningServer() as srv:
+            status, body, _ = srv.withdraw(250)
+            self.assertEqual(status, 422)
+            self.assertEqual(body["error"], "Cannot dispense requested amount")
+            self.assertEqual(body["inventory"], {"500": 8, "200": 10, "100": 20})
+
+    def test_withdrawals_until_the_atm_is_empty(self):
+        with RunningServer({500: 2}) as srv:
+            self.assertEqual(srv.withdraw(500)[0], 200)
+            self.assertEqual(srv.withdraw(500)[0], 200)
+            self.assertEqual(srv.withdraw(500)[0], 422)
+            self.assertEqual(srv.request("GET", "/inventory")[1]["total_cash"], 0)
+
+
+class InvalidInputApiTests(unittest.TestCase):
+    """Each validation rule from the brief, through the API: 400 with a clear message."""
+
+    def assert_bad_request(self, srv, payload, message_part):
+        status, body, _ = srv.request("POST", "/withdrawals", payload)
+        self.assertEqual(status, 400, body)
+        self.assertIn(message_part, body["error"])
+
+    def test_invalid_amounts(self):
+        cases = [
+            (0, "greater than zero"),
+            (-5, "cannot be negative"),
+            ("abc", "must be a number"),
+            (12.5, "whole number"),
+            (True, "must be a number"),
+            (None, "must be a number"),
+            ([2700], "must be a number"),
+            ({"value": 1}, "must be a number"),
+            ("9" * 30, "too large"),
+            (10 ** 300, "exceeds the limit"),
+            (200_001, "exceeds the limit"),
+        ]
+        with RunningServer() as srv:
+            for amount, message in cases:
+                with self.subTest(amount=amount):
+                    self.assert_bad_request(srv, {"amount": amount}, message)
+            self.assertEqual(srv.atm.inventory, {500: 8, 200: 10, 100: 20})
+
+    def test_missing_and_unknown_fields(self):
+        with RunningServer() as srv:
+            self.assert_bad_request(srv, {}, 'Missing field "amount"')
+            self.assert_bad_request(srv, {"amount": 100, "account": "x"}, "Unknown field(s): account")
+
+    def test_body_must_be_a_json_object(self):
+        with RunningServer() as srv:
+            for raw in (b"[2700]", b"2700", b'"2700"', b"null", b"[" * 500 + b"]" * 500):
+                with self.subTest(raw=raw[:20]):
+                    status, body, _ = srv.request("POST", "/withdrawals", raw_body=raw,
+                                                  headers={"Content-Type": "application/json"})
+                    self.assertEqual(status, 400)
+                    self.assertIn("JSON object", body["error"])
+
+    def test_malformed_json(self):
+        with RunningServer() as srv:
+            for raw in (b"{amount: 1}", b"", b"{\"amount\": 1", b"\xff\xfe", b"nan"):
+                with self.subTest(raw=raw[:20]):
+                    status, body, _ = srv.request("POST", "/withdrawals", raw_body=raw,
+                                                  headers={"Content-Type": "application/json"})
+                    self.assertEqual(status, 400)
+
+
+# ------------------------------------------------------------------------- HTTP protocol tests
+
+class HttpProtocolTests(unittest.TestCase):
+    def test_unknown_path_is_404(self):
+        with RunningServer() as srv:
+            for path in ("/", "/admin", "/withdrawals/1", "/../etc/passwd", "/%2e%2e/etc/passwd"):
+                with self.subTest(path=path):
+                    self.assertEqual(srv.request("GET", path)[0], 404)
+
+    def test_wrong_method_is_405_with_allow_header(self):
+        with RunningServer() as srv:
+            status, _, headers = srv.request("GET", "/withdrawals")
+            self.assertEqual((status, headers["allow"]), (405, "POST"))
+            for method in ("PUT", "PATCH", "DELETE"):
+                with self.subTest(method=method):
+                    self.assertEqual(srv.request(method, "/withdrawals")[0], 405)
+            status, _, headers = srv.request("POST", "/inventory", {"amount": 1})
+            self.assertEqual((status, headers["allow"]), (405, "GET"))
+
+    def test_unsupported_method_is_501(self):
+        with RunningServer() as srv:
+            self.assertEqual(srv.request("OPTIONS", "/health")[0], 501)
+
+    def test_content_type_must_be_json(self):
+        with RunningServer() as srv:
+            status, _, _ = srv.request("POST", "/withdrawals", raw_body=b'{"amount": 100}',
+                                       headers={"Content-Type": "text/plain"})
+            self.assertEqual(status, 415)
+            status, _, _ = srv.request("POST", "/withdrawals", raw_body=b'{"amount": 100}',
+                                       headers={"Content-Type": "application/json; charset=utf-8"})
+            self.assertEqual(status, 200)
+
+    def test_body_too_large_is_413(self):
+        with RunningServer() as srv:
+            big = b'{"amount": 100, "x": "' + b"a" * MAX_BODY_BYTES + b'"}'
+            status, _, _ = srv.request("POST", "/withdrawals", raw_body=big,
+                                       headers={"Content-Type": "application/json"})
+            self.assertEqual(status, 413)
+
+    def test_missing_or_bad_content_length(self):
+        with RunningServer() as srv:
+            self.assertEqual(self._raw(srv, b"POST /withdrawals HTTP/1.1\r\nHost: x\r\n\r\n")[:12], b"HTTP/1.1 411")
+            self.assertEqual(
+                self._raw(srv, b"POST /withdrawals HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n")[:12],
+                b"HTTP/1.1 400")
+            chunked = b"POST /withdrawals HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+            self.assertEqual(self._raw(srv, chunked)[:12], b"HTTP/1.1 411")
+
+    def test_garbage_request_gets_a_json_400(self):
+        with RunningServer() as srv:
+            reply = self._raw(srv, b"GARBAGE\r\n\r\n")
+            self.assertTrue(reply.startswith(b"HTTP/1.1 400"), reply[:40])
+            self.assertIn(b'"error"', reply)
+
+    def test_keep_alive_connection_serves_several_requests(self):
+        with RunningServer() as srv:
+            connection = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+            for _ in range(3):
+                connection.request("GET", "/health")
+                self.assertEqual(connection.getresponse().read(), b'{"status": "ok"}')
+            connection.close()
+
+    @staticmethod
+    def _raw(srv, data):
+        with socket.create_connection(("127.0.0.1", srv.port), timeout=10) as sock:
+            sock.sendall(data)
+            chunks = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)  # the server closes the connection after an error
+            return b"".join(chunks)
+
+
+# ------------------------------------------------------------------------- security tests
+
+class SecurityTests(unittest.TestCase):
+    def test_security_headers_on_every_response(self):
+        with RunningServer() as srv:
+            for method, path, body in (("GET", "/health", None), ("GET", "/nope", None),
+                                       ("POST", "/withdrawals", {"amount": -1})):
+                _, _, headers = srv.request(method, path, body)
+                for name, value in SECURITY_HEADERS.items():
+                    with self.subTest(path=path, header=name):
+                        self.assertEqual(headers[name.lower()], value)
+                self.assertTrue(headers["content-type"].startswith("application/json"))
+
+    def test_server_does_not_reveal_python_version(self):
+        with RunningServer() as srv:
+            self.assertEqual(srv.request("GET", "/health")[2]["server"], "atm-service")
+
+    def test_request_id_is_echoed_only_when_safe(self):
+        with RunningServer() as srv:
+            headers = srv.request("GET", "/health", headers={"X-Request-ID": "abc-123"})[2]
+            self.assertEqual(headers["x-request-id"], "abc-123")
+            headers = srv.request("GET", "/health", headers={"X-Request-ID": "bad id<script>"})[2]
+            self.assertRegex(headers["x-request-id"], r"^[0-9a-f]{32}$")
+
+    def test_unexpected_errors_do_not_leak_details(self):
+        with RunningServer() as srv:
+            with mock.patch.object(srv.atm, "dispense", side_effect=RuntimeError("secret detail")), \
+                    self.assertLogs("atm.service", level="ERROR"):
+                status, body, _ = srv.withdraw(100)
+            self.assertEqual((status, body), (500, {"error": "Internal server error"}))
+
+    def test_api_key_protects_inventory_and_withdrawals(self):
+        with RunningServer(api_key=API_KEY) as srv:
+            good = {"Authorization": f"Bearer {API_KEY}"}
+            for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": API_KEY},
+                            {"Authorization": f"Basic {API_KEY}"}):
+                with self.subTest(headers=headers):
+                    status, _, response_headers = srv.withdraw(100, headers)
+                    self.assertEqual(status, 401)
+                    self.assertEqual(response_headers["www-authenticate"], "Bearer")
+                    self.assertEqual(srv.request("GET", "/inventory", headers=headers)[0], 401)
+            self.assertEqual(srv.atm.inventory, {500: 8, 200: 10, 100: 20})  # nothing dispensed
+            self.assertEqual(srv.withdraw(100, good)[0], 200)
+            self.assertEqual(srv.request("GET", "/inventory", headers=good)[0], 200)
+            self.assertEqual(srv.request("GET", "/health")[0], 200)  # probes stay open
+
+    def test_logs_are_json_and_do_not_contain_request_bodies(self):
+        with RunningServer() as srv, self.assertLogs("atm.service", level="INFO") as captured:
+            srv.request("POST", "/withdrawals", {"amount": "secret-looking-value"})
+        formatted = [JsonLogFormatter().format(record) for record in captured.records]
+        for line in formatted:
+            entry = json.loads(line)
+            self.assertIn("status", entry)
+        self.assertFalse(any("secret-looking-value" in line for line in formatted))
+
+
+# ------------------------------------------------------------------------- concurrency over HTTP
+
+class ConcurrentHttpTests(unittest.TestCase):
+    def test_parallel_requests_never_share_notes(self):
+        with RunningServer({500: 8}) as srv:
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                statuses = list(pool.map(lambda _: srv.withdraw(500)[0], range(25)))
+            self.assertEqual(statuses.count(200), 8)
+            self.assertEqual(statuses.count(422), 17)
+            self.assertEqual(srv.atm.inventory, {500: 0})
+
+
+# ------------------------------------------------------------------------- configuration
+
+class ConfigTests(unittest.TestCase):
+    def test_defaults(self):
+        config = load_config({})
+        self.assertEqual((config["host"], config["port"], config["api_key"]), ("127.0.0.1", 8080, None))
+        self.assertEqual(config["atm"].inventory, {500: 8, 200: 10, 100: 20})
+        self.assertEqual(config["atm"].max_withdrawal, 200_000)
+
+    def test_custom_values(self):
+        config = load_config({"ATM_INVENTORY": "4:1, 3:2", "ATM_HOST": "0.0.0.0", "ATM_PORT": "9000",
+                              "ATM_MAX_WITHDRAWAL": "5000", "ATM_API_KEY": API_KEY})
+        self.assertEqual(config["atm"].inventory, {4: 1, 3: 2})
+        self.assertEqual((config["host"], config["port"], config["api_key"]), ("0.0.0.0", 9000, API_KEY))
+
+    def test_invalid_values_stop_the_service_from_starting(self):
+        for env, message in (({"ATM_PORT": "abc"}, "ATM_PORT"), ({"ATM_PORT": "70000"}, "ATM_PORT"),
+                             ({"ATM_MAX_WITHDRAWAL": "0"}, "ATM_MAX_WITHDRAWAL"),
+                             ({"ATM_API_KEY": "short"}, "ATM_API_KEY"),
+                             ({"ATM_INVENTORY": "{}"}, "ATM_INVENTORY"),
+                             ({"ATM_INVENTORY": "500:-1"}, "ATM_INVENTORY")):
+            with self.subTest(env=env), self.assertRaisesRegex(ConfigError, message):
+                load_config(env)
+
+    def test_main_exits_with_code_2_on_bad_config(self):
+        from atm import service
+        with self.assertLogs("atm.service", level="ERROR"):
+            self.assertEqual(service.main({"ATM_PORT": "abc"}), 2)
+        logging.getLogger().handlers.clear()
+
+
+if __name__ == "__main__":
+    unittest.main()

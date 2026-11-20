@@ -1,0 +1,132 @@
+# Same stages as .github/workflows/ci.yml. Tests gate the image build.
+trigger:
+  branches:
+    include: ["*"]
+
+pr:
+  branches:
+    include: ["*"]
+
+variables:
+  PYTHONIOENCODING: utf-8
+  PYTHONPATH: src
+  IMAGE: atm-dispenser:ci
+  TRIVY_IMAGE: aquasec/trivy:0.58.1
+
+stages:
+  - stage: Quality
+    displayName: Lint, type check, SAST, dependency audit
+    jobs:
+      - job: Quality
+        pool: {vmImage: ubuntu-latest}
+        steps:
+          - task: UsePythonVersion@0
+            inputs: {versionSpec: "3.12"}
+          - script: pip install -r requirements-dev.txt
+            workingDirectory: atm-dispenser
+            displayName: Install dev tools
+          - script: ruff check .
+            workingDirectory: atm-dispenser
+            displayName: Lint (ruff)
+          - script: mypy
+            workingDirectory: atm-dispenser
+            displayName: Type check (mypy)
+          - script: bandit -r src/atm -c pyproject.toml
+            workingDirectory: atm-dispenser
+            displayName: SAST (bandit)
+          - script: pip-audit -r requirements-dev.txt
+            workingDirectory: atm-dispenser
+            displayName: Dependency audit (pip-audit)
+          - script: |
+              docker run --rm -v "$(Build.SourcesDirectory):/repo" zricethezav/gitleaks:v8.21.2 \
+                detect --source /repo --redact --verbose
+            displayName: Secret scan (gitleaks)
+
+  - stage: Test
+    dependsOn: []
+    jobs:
+      - job: UnitTests
+        strategy:
+          matrix:
+            Linux_Python39:    {imageName: ubuntu-latest,  pythonVersion: "3.9"}
+            Linux_Python312:   {imageName: ubuntu-latest,  pythonVersion: "3.12"}
+            Windows_Python312: {imageName: windows-latest, pythonVersion: "3.12"}
+            Mac_Python313:     {imageName: macOS-latest,   pythonVersion: "3.13"}
+        pool: {vmImage: $(imageName)}
+        steps:
+          - task: UsePythonVersion@0
+            inputs: {versionSpec: $(pythonVersion)}
+          - script: python -m unittest discover -v
+            workingDirectory: atm-dispenser
+            displayName: Unit, integration, concurrency and fuzz tests
+          - script: python -m doctest -v src/atm/dispenser.py
+            workingDirectory: atm-dispenser
+            displayName: Doctest examples
+      - job: Coverage
+        pool: {vmImage: ubuntu-latest}
+        steps:
+          - task: UsePythonVersion@0
+            inputs: {versionSpec: "3.12"}
+          - script: |
+              pip install -r requirements-dev.txt
+              coverage run -m unittest discover
+              coverage report
+              coverage xml
+            workingDirectory: atm-dispenser
+            displayName: Coverage (minimum 95%)
+          - task: PublishCodeCoverageResults@2
+            inputs: {summaryFileLocation: atm-dispenser/coverage.xml}
+
+  - stage: Container
+    dependsOn: [Quality, Test]
+    jobs:
+      - job: Container
+        pool: {vmImage: ubuntu-latest}
+        steps:
+          - script: docker run --rm -i hadolint/hadolint:v2.12.0 < Dockerfile
+            displayName: Dockerfile lint (hadolint)
+          - script: docker build -t $(IMAGE) .
+            displayName: Build image
+          - script: |
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $(TRIVY_IMAGE) \
+                image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed $(IMAGE)
+            displayName: Image vulnerability scan (Trivy)
+          - script: |
+              docker run --rm -v "$(Build.SourcesDirectory):/src:ro" $(TRIVY_IMAGE) \
+                config --exit-code 1 --severity HIGH,CRITICAL /src
+            displayName: Dockerfile misconfiguration scan (Trivy config)
+          - script: |
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$(Build.ArtifactStagingDirectory):/out" \
+                $(TRIVY_IMAGE) image --format cyclonedx --output /out/sbom.cdx.json $(IMAGE)
+            displayName: SBOM (CycloneDX)
+          - publish: $(Build.ArtifactStagingDirectory)/sbom.cdx.json
+            artifact: sbom
+          - script: |
+              docker run -d --name atm -p 8080:8080 --read-only --cap-drop ALL \
+                --security-opt no-new-privileges:true --memory 128m --pids-limit 100 $(IMAGE)
+              for _ in $(seq 1 30); do
+                [ "$(docker inspect -f '{{.State.Health.Status}}' atm)" = healthy ] && break
+                sleep 1
+              done
+              test "$(docker inspect -f '{{.State.Health.Status}}' atm)" = healthy
+            displayName: Start the hardened container and wait until healthy
+          - script: |
+              set -e
+              test "$(docker exec atm python -c 'import os; print(os.getuid())')" = 10001
+              ! docker exec atm python -c "open('/app/probe', 'w')"
+            displayName: Container hardening checks (non-root, read-only filesystem)
+          - script: python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080
+            displayName: End-to-end smoke test
+          - script: |
+              export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+              docker run -d --name atm-auth -p 8081:8080 -e ATM_API_KEY --read-only --cap-drop ALL $(IMAGE)
+              python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8081
+            displayName: End-to-end smoke test with an API key
+          - script: |
+              docker run --rm --network host -v "$(Build.ArtifactStagingDirectory):/zap/wrk:rw" \
+                ghcr.io/zaproxy/zaproxy:stable zap-api-scan.py \
+                -t http://localhost:8080/openapi.json -f openapi -r zap-report.html -I
+            displayName: DAST (OWASP ZAP API scan)
+          - publish: $(Build.ArtifactStagingDirectory)/zap-report.html
+            artifact: zap-report
+            condition: always()
