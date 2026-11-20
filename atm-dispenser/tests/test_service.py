@@ -7,16 +7,24 @@ no stack traces) and concurrent withdrawals over HTTP.
 import http.client
 import json
 import logging
+import os
+import signal
 import socket
+import subprocess
+import sys
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest import mock
 
-from atm import CashDispenser
-from atm.service import (
+import service
+from dispenser import CashDispenser
+from service import (
     MAX_BODY_BYTES,
     SECURITY_HEADERS,
+    ATMRequestHandler,
     ConfigError,
     JsonLogFormatter,
     create_server,
@@ -69,10 +77,9 @@ class RunningServer:
 # ------------------------------------------------------------------------- functional tests
 
 class HealthAndInventoryTests(unittest.TestCase):
-    def test_health_and_readiness(self):
+    def test_health(self):
         with RunningServer() as srv:
-            self.assertEqual(srv.request("GET", "/health")[:2], (200, {"status": "ok"}))
-            self.assertEqual(srv.request("GET", "/ready")[:2], (200, {"status": "ready"}))
+            self.assertEqual(srv.request("GET", "/health")[:2], (200, {"status": "ok", "version": "dev"}))
 
     def test_inventory(self):
         with RunningServer() as srv:
@@ -86,7 +93,7 @@ class HealthAndInventoryTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(body["openapi"], "3.0.3")
             self.assertEqual(set(body["paths"]),
-                             {"/health", "/ready", "/inventory", "/withdrawals", "/openapi.json"})
+                             {"/health", "/inventory", "/withdrawals", "/openapi.json"})
 
     def test_trailing_slash_and_query_string_are_ignored(self):
         with RunningServer() as srv:
@@ -240,8 +247,36 @@ class HttpProtocolTests(unittest.TestCase):
             connection = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
             for _ in range(3):
                 connection.request("GET", "/health")
-                self.assertEqual(connection.getresponse().read(), b'{"status": "ok"}')
+                self.assertEqual(json.loads(connection.getresponse().read())["status"], "ok")
             connection.close()
+
+    def test_body_on_a_get_request_cannot_smuggle_a_second_request(self):
+        """A GET carrying a body that is itself a complete withdrawal request: the server must
+        not read that body as a new request (that would dispense money nobody asked for)."""
+        hidden = (b"POST /withdrawals HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                  b"Content-Length: 15\r\n\r\n{\"amount\": 500}")
+        request = b"GET /health HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(hidden) + hidden
+        with RunningServer() as srv:
+            reply = self._raw(srv, request)
+            self.assertEqual(reply.count(b"HTTP/1.1 "), 1, reply)
+            self.assertIn(b"Connection: close", reply)
+            self.assertEqual(srv.atm.inventory, {500: 8, 200: 10, 100: 20})
+
+    def test_slow_body_gets_408(self):
+        with mock.patch.object(ATMRequestHandler, "timeout", 1), RunningServer() as srv:
+            reply = self._raw(srv, b"POST /withdrawals HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                                   b"Content-Length: 50\r\n\r\n{\"amount\": 500}")
+            self.assertTrue(reply.startswith(b"HTTP/1.1 408"), reply[:60])
+            self.assertEqual(srv.atm.inventory, {500: 8, 200: 10, 100: 20})
+
+    def test_body_cut_short_gets_400(self):
+        with RunningServer() as srv, socket.create_connection(("127.0.0.1", srv.port), timeout=10) as sock:
+            sock.sendall(b"POST /withdrawals HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: 50\r\n\r\n{\"amount\": 500}")
+            sock.shutdown(socket.SHUT_WR)  # the client stops sending
+            reply = b"".join(iter(lambda: sock.recv(4096), b""))
+        self.assertTrue(reply.startswith(b"HTTP/1.1 400"), reply[:60])
+        self.assertIn(b"shorter than Content-Length", reply)
 
     @staticmethod
     def _raw(srv, data):
@@ -282,7 +317,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_unexpected_errors_do_not_leak_details(self):
         with RunningServer() as srv:
-            with mock.patch.object(srv.atm, "dispense", side_effect=RuntimeError("secret detail")), \
+            with mock.patch.object(srv.atm, "dispense_with_inventory", side_effect=RuntimeError("secret detail")), \
                     self.assertLogs("atm.service", level="ERROR"):
                 status, body, _ = srv.withdraw(100)
             self.assertEqual((status, body), (500, {"error": "Internal server error"}))
@@ -315,6 +350,12 @@ class SecurityTests(unittest.TestCase):
 # ------------------------------------------------------------------------- concurrency over HTTP
 
 class ConcurrentHttpTests(unittest.TestCase):
+    def test_each_response_reports_the_inventory_right_after_its_own_withdrawal(self):
+        with RunningServer({500: 30}) as srv, ThreadPoolExecutor(max_workers=30) as pool:
+            bodies = list(pool.map(lambda _: srv.withdraw(500)[1], range(30)))
+        notes_left = sorted(body["inventory"]["500"] for body in bodies)
+        self.assertEqual(notes_left, list(range(30)))  # 29, 28, ... 0: each value exactly once
+
     def test_parallel_requests_never_share_notes(self):
         with RunningServer({500: 8}) as srv:
             with ThreadPoolExecutor(max_workers=20) as pool:
@@ -329,27 +370,89 @@ class ConcurrentHttpTests(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
     def test_defaults(self):
         config = load_config({})
-        self.assertEqual((config["host"], config["port"], config["api_key"]), ("127.0.0.1", 8080, None))
-        self.assertEqual(config["atm"].inventory, {500: 8, 200: 10, 100: 20})
-        self.assertEqual(config["atm"].max_withdrawal, 200_000)
+        self.assertEqual((config.host, config.port, config.api_key), ("127.0.0.1", 8080, None))
+        self.assertEqual(config.version, "dev")
+        self.assertEqual(config.atm.inventory, {500: 8, 200: 10, 100: 20})
+        self.assertEqual(config.atm.max_withdrawal, 200_000)
+
+    def test_version_is_reported_by_health(self):
+        atm = CashDispenser({500: 1})
+        server = create_server(atm, "127.0.0.1", 0, version="1.0.20261120183012")
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+            connection.request("GET", "/health")
+            self.assertEqual(json.loads(connection.getresponse().read())["version"], "1.0.20261120183012")
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_custom_values(self):
         config = load_config({"ATM_INVENTORY": "4:1, 3:2", "ATM_HOST": "0.0.0.0", "ATM_PORT": "9000",
-                              "ATM_MAX_WITHDRAWAL": "5000", "ATM_API_KEY": API_KEY})
-        self.assertEqual(config["atm"].inventory, {4: 1, 3: 2})
-        self.assertEqual((config["host"], config["port"], config["api_key"]), ("0.0.0.0", 9000, API_KEY))
+                              "ATM_MAX_WITHDRAWAL": "5000", "ATM_API_KEY": API_KEY,
+                              "ATM_VERSION": "1.0.20261120183012"})
+        self.assertEqual(config.version, "1.0.20261120183012")
+        self.assertEqual(config.atm.inventory, {4: 1, 3: 2})
+        self.assertEqual((config.host, config.port, config.api_key), ("0.0.0.0", 9000, API_KEY))
 
     def test_invalid_values_stop_the_service_from_starting(self):
         for env, message in (({"ATM_PORT": "abc"}, "ATM_PORT"), ({"ATM_PORT": "70000"}, "ATM_PORT"),
                              ({"ATM_MAX_WITHDRAWAL": "0"}, "ATM_MAX_WITHDRAWAL"),
                              ({"ATM_API_KEY": "short"}, "ATM_API_KEY"),
+                             ({"ATM_VERSION": "1.0 <script>"}, "ATM_VERSION"),
                              ({"ATM_INVENTORY": "{}"}, "ATM_INVENTORY"),
                              ({"ATM_INVENTORY": "500:-1"}, "ATM_INVENTORY")):
             with self.subTest(env=env), self.assertRaisesRegex(ConfigError, message):
                 load_config(env)
 
+    def test_main_starts_and_stops_cleanly(self):
+        handlers = {}
+        environ = {"ATM_PORT": "0", "ATM_INVENTORY": "4:1, 3:2"}
+        result = []
+        with mock.patch.object(service.signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler)), \
+                self.assertLogs("atm.service", level="INFO") as captured:
+            thread = threading.Thread(target=lambda: result.append(service.main(environ)))
+            thread.start()
+            deadline = time.time() + 10
+            while not any("listening on" in r.getMessage() for r in captured.records) and time.time() < deadline:
+                time.sleep(0.05)
+            handlers[signal.SIGTERM](signal.SIGTERM, None)  # what "docker stop" does
+            thread.join(timeout=10)
+        logging.getLogger().handlers.clear()
+        self.assertEqual(result, [0])
+        messages = [r.getMessage() for r in captured.records]
+        self.assertTrue(any("ATM_API_KEY is not set" in m for m in messages))
+        self.assertIn("shutting down", messages)
+
+    @unittest.skipIf(sys.platform == "win32", "SIGTERM cannot be sent to a process on Windows")
+    def test_real_process_stops_on_sigterm(self):
+        src = Path(__file__).resolve().parent.parent / "src"
+        process = subprocess.Popen(
+            [sys.executable, "-m", "service"], cwd=src, stdout=subprocess.PIPE, text=True,
+            env={**os.environ, "ATM_PORT": "0", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        try:
+            first_lines = [process.stdout.readline() for _ in range(2)]
+            self.assertTrue(any("listening on" in line for line in first_lines), first_lines)
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=10), 0)
+        finally:
+            process.kill()
+            process.stdout.close()
+
+    def test_log_formatter_includes_the_error_for_exceptions(self):
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            record = logging.LogRecord("atm.service", logging.ERROR, __file__, 1, "failed", None, sys.exc_info())
+        entry = json.loads(JsonLogFormatter().format(record))
+        self.assertEqual((entry["level"], entry["message"]), ("ERROR", "failed"))
+        self.assertIn("ValueError: boom", entry["error"])
+
     def test_main_exits_with_code_2_on_bad_config(self):
-        from atm import service
+        import service
         with self.assertLogs("atm.service", level="ERROR"):
             self.assertEqual(service.main({"ATM_PORT": "abc"}), 2)
         logging.getLogger().handlers.clear()

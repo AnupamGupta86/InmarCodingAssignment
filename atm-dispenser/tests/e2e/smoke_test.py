@@ -2,6 +2,7 @@
 
     python3 tests/e2e/smoke_test.py http://localhost:8080
     ATM_API_KEY=... python3 tests/e2e/smoke_test.py http://localhost:8080
+    EXPECTED_VERSION=1.0.20261120183012 python3 tests/e2e/smoke_test.py http://localhost:8080
 
 Run it after every start (local process or container). It talks to the service
 over real HTTP, checks the functional behaviour, the error handling and the security headers,
@@ -31,9 +32,16 @@ def call(base_url, method, path, body=None, authorised=True, content_type="appli
         request.add_header("Authorization", f"Bearer {API_KEY}")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
-            return response.status, json.loads(response.read() or b"null"), dict(response.headers)
+            return response.status, _json(response.read()), dict(response.headers)
     except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or b"null"), dict(error.headers)
+        return error.code, _json(error.read()), dict(error.headers)
+
+
+def _json(raw):
+    try:
+        return json.loads(raw or b"null")
+    except ValueError:
+        return {"error": f"response is not JSON: {raw[:80]!r}"}
 
 
 def check(name, condition, detail=""):
@@ -46,7 +54,7 @@ def wait_until_ready(base_url, seconds=60):
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:
-            if call(base_url, "GET", "/ready")[0] == 200:
+            if call(base_url, "GET", "/health")[0] == 200:
                 return True
         except OSError:
             pass
@@ -54,7 +62,10 @@ def wait_until_ready(base_url, seconds=60):
     return False
 
 
-def main(base_url):
+def main(base_url, api_key=None):
+    global API_KEY
+    API_KEY = os.environ.get("ATM_API_KEY", "") if api_key is None else api_key
+    failures.clear()
     base_url = base_url.rstrip("/")
     print(f"Smoke testing {base_url}")
 
@@ -63,13 +74,21 @@ def main(base_url):
         return 1
 
     status, body, headers = call(base_url, "GET", "/health")
-    check("GET /health returns 200 ok", (status, body) == (200, {"status": "ok"}), f"{status} {body}")
+    check("GET /health returns 200 ok", status == 200 and body.get("status") == "ok", f"{status} {body}")
+    expected_version = os.environ.get("EXPECTED_VERSION")
+    if expected_version:
+        check(f"service reports version {expected_version}", body.get("version") == expected_version,
+              f"got {body.get('version')}")
     check("security headers present", headers.get("X-Content-Type-Options") == "nosniff"
           and "default-src 'none'" in headers.get("Content-Security-Policy", ""))
     check("server version not exposed", headers.get("Server") == "atm-service", headers.get("Server"))
 
     status, body, _ = call(base_url, "GET", "/inventory")
     check("GET /inventory returns 200", status == 200, f"{status} {body}")
+    if status != 200:
+        hint = " - set ATM_API_KEY to the service's key" if status == 401 else ""
+        print(f"\nCannot continue without the inventory{hint}")
+        return 1
     before = {int(k): v for k, v in body["inventory"].items()}
 
     # Choose an amount the current inventory can pay: the smallest note that is still available.

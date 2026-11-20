@@ -15,10 +15,11 @@ import string
 import unittest
 from collections.abc import Hashable
 
-from atm import CashDispenser, InvalidAmountError, InvalidInventoryError
-from atm.cli import parse_inventory
-from atm.validation import validate_amount, validate_inventory
+from cli import parse_inventory
+from dispenser import CashDispenser
+from errors import InvalidAmountError, InvalidInventoryError
 from tests.test_service import RunningServer
+from validation import validate_amount, validate_inventory
 
 SEED = 20261120
 

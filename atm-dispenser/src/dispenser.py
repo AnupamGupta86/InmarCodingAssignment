@@ -14,13 +14,15 @@ Concurrency
 """
 
 import threading
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
-from atm.allocator import find_minimum_notes
-from atm.errors import InvalidAmountError
-from atm.validation import validate_amount, validate_inventory
+from allocator import find_minimum_notes
+from errors import InvalidAmountError
+from validation import validate_amount, validate_inventory
 
 CANNOT_DISPENSE = "Cannot dispense requested amount"
+DEFAULT_INVENTORY = "500:8, 200:10, 100:20"   # the example from the brief
+DEFAULT_MAX_WITHDRAWAL = 200_000
 
 
 class CashDispenser:
@@ -55,6 +57,14 @@ class CashDispenser:
         (the caller shows CANNOT_DISPENSE); the inventory is then left untouched.
         Raises InvalidAmountError for an amount that is zero, negative or not a whole number.
         """
+        return self.dispense_with_inventory(amount)[0]
+
+    def dispense_with_inventory(self, amount) -> Tuple[Optional[Dict[int, int]], Dict[int, int]]:
+        """Like dispense(), but also return the inventory right after this withdrawal.
+
+        Both come from the same locked step, so the inventory reported to a customer is never
+        mixed up with another customer's withdrawal happening at the same time.
+        """
         amount = validate_amount(amount)  # invalid input fails before the inventory is touched
         if self.max_withdrawal is not None and amount > self.max_withdrawal:
             raise InvalidAmountError(
@@ -64,7 +74,7 @@ class CashDispenser:
         with self._lock:
             notes_to_dispense = find_minimum_notes(amount, self._notes)
             if notes_to_dispense is None:
-                return None
+                return None, dict(self._notes)
 
             # The full amount has been allocated: only now is the inventory updated. The new
             # inventory is built completely and then swapped in, so it is never half-updated.
@@ -73,7 +83,7 @@ class CashDispenser:
                 updated[denomination] -= count
             self._notes = updated
 
-            return dict(notes_to_dispense)
+            return dict(notes_to_dispense), dict(updated)
 
     @property
     def inventory(self) -> Dict[int, int]:

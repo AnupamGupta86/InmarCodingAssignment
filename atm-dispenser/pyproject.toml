@@ -17,18 +17,15 @@ select = ["E", "W", "F", "B", "I", "UP", "S", "SIM", "C4"]
 "tests/*" = ["S101", "S104", "S310", "S311"]
 
 [tool.mypy]
-files = ["src/atm"]
+files = ["src"]
 ignore_missing_imports = true
 check_untyped_defs = true
 
 [tool.coverage.run]
 branch = true
-source = ["src/atm"]
-omit = ["src/atm/__main__.py"]
+source = ["src"]
 
 [tool.coverage.report]
 show_missing = true
 fail_under = 95
-
-[tool.bandit]
-exclude_dirs = ["tests"]
+exclude_also = ['if __name__ == "__main__":']

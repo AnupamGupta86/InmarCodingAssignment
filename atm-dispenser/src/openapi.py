@@ -33,10 +33,11 @@ OPENAPI_SPEC = {
         "schemas": {"Error": _ERROR, "Notes": _NOTES},
     },
     "paths": {
-        "/health": {"get": {"summary": "Liveness probe", "security": [],
-                            "responses": {"200": _json({"type": "object"}, "Service is alive")}}},
-        "/ready": {"get": {"summary": "Readiness probe", "security": [],
-                           "responses": {"200": _json({"type": "object"}, "Service is ready")}}},
+        "/health": {"get": {"summary": "Liveness probe and build version", "security": [],
+                            "responses": {"200": _json({"type": "object", "properties": {
+                                "status": {"type": "string", "example": "ok"},
+                                "version": {"type": "string", "example": "1.0.20261120183012"}}},
+                                "Service is alive")}}},
         "/inventory": {"get": {
             "summary": "Notes currently in the ATM",
             "security": [{"apiKey": []}],

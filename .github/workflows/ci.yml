@@ -15,12 +15,11 @@ concurrency:
 
 env:
   PYTHONIOENCODING: utf-8
-  IMAGE: atm-dispenser:ci
   TRIVY_IMAGE: aquasec/trivy:0.58.1
 
 jobs:
   quality:
-    name: Lint, type check, SAST, dependency audit
+    name: Lint, security rules, type check, dependency audit
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: atm-dispenser}}
     steps:
@@ -28,12 +27,10 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install -r requirements-dev.txt
-      - name: Lint (ruff, incl. flake8-bandit security rules)
+      - name: Lint and security rules (ruff, includes the Bandit rule set)
         run: ruff check .
       - name: Type check (mypy)
         run: mypy
-      - name: SAST (bandit)
-        run: bandit -r src/atm -c pyproject.toml
       - name: Dependency vulnerabilities (pip-audit)
         run: pip-audit -r requirements-dev.txt
 
@@ -64,9 +61,9 @@ jobs:
       - name: Unit, integration, concurrency and fuzz tests
         run: python -m unittest discover -v
       - name: Doctest examples
-        run: python -m doctest -v src/atm/dispenser.py
+        run: python -m doctest -v src/dispenser.py
       - name: CLI - example from the brief
-        run: python -m atm --inventory "500:8, 200:10, 100:20" 2700
+        run: python -m cli --inventory "500:8, 200:10, 100:20" 2700
 
   coverage:
     name: Coverage (minimum 95%)
@@ -94,8 +91,18 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with: {dockerfile: Dockerfile, failure-threshold: warning}
 
+      - name: Set the build version (major.minor.datetime)
+        run: |
+          VERSION="$(./scripts/version.sh)"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "IMAGE=atm-dispenser:$VERSION" >> "$GITHUB_ENV"
+          echo "### Build version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build image
-        run: docker build -t "$IMAGE" .
+        run: docker build --build-arg VERSION="$VERSION" -t "$IMAGE" .
+
+      - name: Validate image (version, user, health check, port, contents, size, CLI)
+        run: ./scripts/validate-image.sh "$IMAGE" "$VERSION"
 
       - name: Image vulnerability scan (Trivy) - fail on fixable HIGH/CRITICAL
         run: |
@@ -112,7 +119,7 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/out" "$TRIVY_IMAGE" \
             image --format cyclonedx --output /out/sbom.cdx.json "$IMAGE"
       - uses: actions/upload-artifact@v4
-        with: {name: sbom, path: sbom.cdx.json}
+        with: {name: "sbom-${{ env.VERSION }}", path: sbom.cdx.json}
 
       - name: Start the hardened container
         run: |
@@ -132,14 +139,14 @@ jobs:
           test "$(docker exec atm python -c 'import os; print(os.getuid())')" = 10001
           ! docker exec atm python -c "open('/app/probe', 'w')"
 
-      - name: End-to-end smoke test against the container
-        run: python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080
+      - name: End-to-end smoke test against the container (checks it reports the built version)
+        run: EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080
 
       - name: End-to-end smoke test with an API key
         run: |
           export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
           docker run -d --name atm-auth -p 8081:8080 -e ATM_API_KEY --read-only --cap-drop ALL "$IMAGE"
-          python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8081
+          EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8081
 
       - name: DAST - OWASP ZAP API scan
         uses: zaproxy/action-api-scan@v0.9.0

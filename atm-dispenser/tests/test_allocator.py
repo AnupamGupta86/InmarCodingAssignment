@@ -5,7 +5,7 @@ import random
 import time
 import unittest
 
-from atm.allocator import find_minimum_notes
+from allocator import find_minimum_notes
 
 
 def paid(notes):
@@ -139,6 +139,14 @@ class AgainstBruteForceTests(unittest.TestCase):
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_huge_note_counts_stay_fast(self):
+        # Only amount // value notes of each denomination can ever be used, so a machine
+        # reporting a trillion notes is no slower than one with just enough.
+        start = time.perf_counter()
+        result = find_minimum_notes(100_000, {1: 10 ** 12, 2: 10 ** 12, 5: 10 ** 12})
+        self.assertEqual(result, {5: 20_000})
+        self.assertLess(time.perf_counter() - start, 5.0)
+
     def test_large_atm_withdrawal_is_fast(self):
         inventory = {2000: 500, 500: 2000, 200: 2000, 100: 2000, 50: 2000, 20: 2000, 10: 2000}
         start = time.perf_counter()

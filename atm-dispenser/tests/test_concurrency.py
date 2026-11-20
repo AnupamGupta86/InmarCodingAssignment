@@ -10,7 +10,9 @@ import time
 import unittest
 from unittest import mock
 
-from atm import CashDispenser, allocator, dispenser
+import allocator
+import dispenser
+from dispenser import CashDispenser
 
 
 def withdraw_concurrently(atm, amounts):

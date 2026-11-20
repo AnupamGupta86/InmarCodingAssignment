@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# Build the ATM service, start it in a container and check that it works.
+# Build the ATM service image, validate it, start it in a container and check that it works.
 #
 # Usage:
-#   ./scripts/run-container.sh           test, build, start and check
+#   ./scripts/run-container.sh           test, build, validate, start and check
 #   ./scripts/run-container.sh --stop    stop and remove the container
 #
 # The API key is taken from ATM_API_KEY if you set it; otherwise a random one is created.
 # Read it back later with:  docker exec atm-dispenser printenv ATM_API_KEY
 
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
-IMAGE="atm-dispenser:local"
+VERSION="$(./scripts/version.sh)"
+IMAGE="atm-dispenser:${VERSION}"
 CONTAINER="atm-dispenser"
 PORT="${PORT:-8080}"
 URL="http://127.0.0.1:${PORT}"
-
-cd "$(dirname "$0")/.."
 
 
 step() { echo; echo "==> $*"; }
@@ -25,17 +25,22 @@ fail() { echo "    FAIL  $*"; exit 1; }
 
 
 run_tests() {
-  step "1/6  Running the tests (the image is built only if they pass)"
+  step "1/7  Running the tests (the image is built only if they pass)"
   (cd atm-dispenser && python3 -m unittest discover)
 }
 
 build_image() {
-  step "2/6  Building the image ${IMAGE}"
-  docker build --tag "${IMAGE}" .
+  step "2/7  Building the image ${IMAGE}"
+  docker build --build-arg VERSION="${VERSION}" --tag "${IMAGE}" --tag atm-dispenser:local .
+}
+
+validate_image() {
+  step "3/7  Validating the image"
+  ./scripts/validate-image.sh "${IMAGE}" "${VERSION}"
 }
 
 start_container() {
-  step "3/6  Starting the container on ${URL}"
+  step "4/7  Starting the container on ${URL}"
   stop_container
 
   if [[ -z "${ATM_API_KEY:-}" ]]; then
@@ -57,7 +62,7 @@ start_container() {
 }
 
 wait_until_healthy() {
-  step "4/6  Waiting for the health check"
+  step "5/7  Waiting for the health check"
   local status=""
   for _ in $(seq 1 30); do
     status="$(docker inspect --format '{{.State.Health.Status}}' "${CONTAINER}")"
@@ -72,7 +77,7 @@ wait_until_healthy() {
 }
 
 check_hardening() {
-  step "5/6  Checking the container is locked down"
+  step "6/7  Checking the container is locked down"
 
   local user_id
   user_id="$(docker exec "${CONTAINER}" python -c 'import os; print(os.getuid())')"
@@ -90,8 +95,8 @@ check_hardening() {
 }
 
 run_smoke_test() {
-  step "6/6  Running the end-to-end smoke test"
-  python3 atm-dispenser/tests/e2e/smoke_test.py "${URL}"
+  step "7/7  Running the end-to-end smoke test"
+  EXPECTED_VERSION="${VERSION}" python3 atm-dispenser/tests/e2e/smoke_test.py "${URL}"
 }
 
 stop_container() {
@@ -101,7 +106,7 @@ stop_container() {
 print_next_steps() {
   cat <<MSG
 
-The container is running. Try it:
+Version ${VERSION} is running. Try it:
 
   export ATM_API_KEY="\$(docker exec ${CONTAINER} printenv ATM_API_KEY)"
   curl -s -H "Authorization: Bearer \$ATM_API_KEY" -H 'Content-Type: application/json' \\
@@ -121,6 +126,7 @@ fi
 
 run_tests
 build_image
+validate_image
 start_container
 wait_until_healthy
 check_hardening

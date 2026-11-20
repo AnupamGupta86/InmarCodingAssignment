@@ -3,8 +3,8 @@
 import unittest
 from collections import OrderedDict
 
-from atm.errors import ATMError, InvalidAmountError, InvalidInventoryError
-from atm.validation import validate_amount, validate_inventory
+from errors import ATMError, InvalidAmountError, InvalidInventoryError
+from validation import parse_inventory, validate_amount, validate_inventory
 
 
 class ValidAmountTests(unittest.TestCase):
@@ -82,6 +82,12 @@ class InvalidAmountTests(unittest.TestCase):
 
     def test_list_is_rejected(self):
         self.assert_rejected([2700], "must be a number")
+
+    def test_non_ascii_digits_are_rejected(self):
+        # Python's int() accepts Arabic-Indic, Devanagari and full-width digits; an ATM must not.
+        for text in ("١٠٠", "१००", "１００", "١٢.٥"):
+            with self.subTest(text=text):
+                self.assert_rejected(text, "must be a number")
 
     def test_extremely_long_number_text_is_rejected_before_conversion(self):
         self.assert_rejected("9" * 19, "too large")
@@ -163,6 +169,55 @@ class InvalidInventoryTests(unittest.TestCase):
     def test_inventory_errors_share_a_common_base_class(self):
         with self.assertRaises(ATMError):
             validate_inventory({})
+
+
+class ParseInventoryTests(unittest.TestCase):
+    def test_simple_format(self):
+        self.assertEqual(parse_inventory("500:8, 200:10, 100:20"), {500: 8, 200: 10, 100: 20})
+
+    def test_format_used_in_the_brief(self):
+        self.assertEqual(parse_inventory("{ 500: 8, 200: 10, 100: 20 }"), {500: 8, 200: 10, 100: 20})
+
+    def test_trailing_comma_is_tolerated(self):
+        self.assertEqual(parse_inventory("500:8,"), {500: 8})
+
+    def test_negative_values_are_parsed_and_left_for_the_atm_to_reject(self):
+        self.assertEqual(parse_inventory("500:-1"), {500: -1})
+
+    def test_rejects_empty_text(self):
+        for text in ("", "   ", "{}", "{ }"):
+            with self.subTest(text=text), self.assertRaises(InvalidInventoryError):
+                parse_inventory(text)
+
+    def test_rejects_missing_count(self):
+        with self.assertRaises(InvalidInventoryError):
+            parse_inventory("500")
+
+    def test_rejects_extra_colon(self):
+        with self.assertRaises(InvalidInventoryError):
+            parse_inventory("500:8:1")
+
+    def test_rejects_non_numeric_denomination(self):
+        with self.assertRaisesRegex(InvalidInventoryError, "denomination 'abc'"):
+            parse_inventory("abc:8")
+
+    def test_rejects_non_numeric_count(self):
+        with self.assertRaisesRegex(InvalidInventoryError, "note count"):
+            parse_inventory("500:many")
+
+    def test_rejects_non_ascii_digits(self):
+        with self.assertRaisesRegex(InvalidInventoryError, "must be a whole number"):
+            parse_inventory("５００:8")
+
+    def test_huge_number_gets_a_short_clear_message(self):
+        with self.assertRaises(InvalidInventoryError) as raised:
+            parse_inventory("500:" + "9" * 5000)
+        self.assertIn("too large", str(raised.exception))
+        self.assertLess(len(str(raised.exception)), 120)
+
+    def test_rejects_duplicate_denomination(self):
+        with self.assertRaisesRegex(InvalidInventoryError, "more than once"):
+            parse_inventory("500:8, 500:2")
 
 
 if __name__ == "__main__":

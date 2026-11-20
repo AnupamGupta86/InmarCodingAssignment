@@ -2,7 +2,8 @@
 
 import unittest
 
-from atm import CANNOT_DISPENSE, CashDispenser, InvalidAmountError, InvalidInventoryError
+from dispenser import CANNOT_DISPENSE, CashDispenser
+from errors import InvalidAmountError, InvalidInventoryError
 
 
 class SuccessfulWithdrawalTests(unittest.TestCase):
@@ -119,6 +120,24 @@ class InvalidInputTests(unittest.TestCase):
         for denomination in (0, -500, 2.5, "500"):
             with self.subTest(denomination=denomination), self.assertRaises(InvalidInventoryError):
                 CashDispenser({denomination: 1})
+
+
+class DispenseWithInventoryTests(unittest.TestCase):
+    def test_success_returns_notes_and_inventory_after(self):
+        atm = CashDispenser({500: 8, 200: 10, 100: 20})
+        notes, after = atm.dispense_with_inventory(2700)
+        self.assertEqual(notes, {500: 5, 200: 1})
+        self.assertEqual(after, {500: 3, 200: 9, 100: 20})
+
+    def test_failure_returns_none_and_unchanged_inventory(self):
+        atm = CashDispenser({500: 8, 200: 10, 100: 20})
+        self.assertEqual(atm.dispense_with_inventory(250), (None, {500: 8, 200: 10, 100: 20}))
+
+    def test_returned_inventory_is_a_copy(self):
+        atm = CashDispenser({500: 8})
+        _, after = atm.dispense_with_inventory(500)
+        after[500] = 99
+        self.assertEqual(atm.inventory, {500: 7})
 
 
 class WithdrawalLimitTests(unittest.TestCase):
