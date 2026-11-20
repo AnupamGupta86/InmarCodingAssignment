@@ -2,4 +2,4 @@
 ruff==0.16.9
 mypy==2.3.1
 coverage==7.6.9
-pip-audit==2.7.3
+pip-audit==2.10.1
