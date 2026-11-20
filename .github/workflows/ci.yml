@@ -1,10 +1,13 @@
 # Tests and security checks must pass before the image is built.
+# The weekly run re-scans the code and the base image for newly published vulnerabilities.
 name: CI
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"      # Mondays 03:17 UTC
 
 permissions:
   contents: read
@@ -33,6 +36,20 @@ jobs:
         run: mypy
       - name: Dependency vulnerabilities (pip-audit)
         run: pip-audit -r requirements-dev.txt
+
+  codeql:
+    name: SAST (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # to publish results in the repository's Security tab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
 
   secrets:
     name: Secret scan (gitleaks)
@@ -83,7 +100,7 @@ jobs:
   container:
     name: Container build, scan, test, DAST
     runs-on: ubuntu-latest
-    needs: [quality, secrets, test, coverage]
+    needs: [quality, codeql, secrets, test, coverage]
     steps:
       - uses: actions/checkout@v4
 

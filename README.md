@@ -148,9 +148,7 @@ InmarCodingAssignment/
 │   ├── validate-image.sh            checks a built image before it is run
 │   └── version.sh                   prints the build version (major.minor.datetime)
 ├── .github/
-│   ├── workflows/ci.yml             CI/CD with DevSecOps gates
-│   ├── workflows/codeql.yml         CodeQL security analysis
-│   └── dependabot.yml               automatic updates for actions, base image, dev tools
+│   └── workflows/ci.yml             CI/CD with DevSecOps gates (on every push and weekly)
 ├── azure-pipelines.yml              the same pipeline for Azure DevOps
 ├── Dockerfile                       runtime image (application code only)
 └── Makefile                         shortcuts for the commands below
@@ -510,6 +508,7 @@ Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same s
 
 ```
  quality ───────────┐   ruff (incl. the Bandit security rules), mypy, pip-audit
+ codeql             │   CodeQL security analysis (security-extended queries)
  secrets            │   gitleaks over the full git history
  test (3 OS × 3 Py) │   unit, integration, concurrency, fuzz, CLI, doctest
  coverage           │   fails below 95 %
@@ -526,8 +525,8 @@ Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same s
 - **Image validation** (`scripts/validate-image.sh`) runs before any scan or container start:
   version label and `ATM_VERSION`, user 10001, health check, port 8080, only the application modules in
   `/app`, size ≤ 250 MB, and the CLI inside the image dispenses the brief's example.
-- `codeql.yml` runs CodeQL (`security-extended`) on every push and weekly; Dependabot keeps the
-  actions, the base image and the dev tools up to date.
+- The pipeline also runs every Monday, so newly published vulnerabilities in the code or the
+  base image are found even without a push.
 
 ---
 
@@ -545,7 +544,7 @@ Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same s
 | Availability | Socket timeout against slow clients; connection backlog sized for bursts; CPU, memory and process limits on the container |
 | Logging | Structured JSON logs; request bodies never logged; client request ids sanitised against log injection |
 | Container | Slim base, application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
-| Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, Dependabot |
+| Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
 
 ### Automated security checks (CI)
 
