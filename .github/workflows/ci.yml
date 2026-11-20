@@ -26,9 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: atm-dispenser}}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.13"}
       - run: pip install -r requirements-dev.txt
       - name: Lint and security rules (ruff, includes the Bandit rule set)
         run: ruff check .
@@ -44,20 +44,20 @@ jobs:
       contents: read
       security-events: write   # to publish results in the repository's Security tab
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@v6
+      - uses: github/codeql-action/init@v4
         with:
           languages: python
           queries: security-extended
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
 
   secrets:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with: {fetch-depth: 0}
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -70,10 +70,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.9", "3.12", "3.13"]
+        python-version: ["3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with: {python-version: "${{ matrix.python-version }}"}
       - name: Unit, integration, concurrency and fuzz tests
         run: python -m unittest discover -v
@@ -87,14 +87,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: atm-dispenser}}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.13"}
       - run: pip install -r requirements-dev.txt
       - run: coverage run -m unittest discover
       - run: coverage report
       - run: coverage xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: {name: coverage, path: atm-dispenser/coverage.xml}
 
   container:
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [quality, codeql, secrets, test, coverage]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Dockerfile lint (hadolint)
         uses: hadolint/hadolint-action@v3.1.0
@@ -135,7 +135,7 @@ jobs:
         run: |
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/out" "$TRIVY_IMAGE" \
             image --format cyclonedx --output /out/sbom.cdx.json "$IMAGE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: {name: "sbom-${{ env.VERSION }}", path: sbom.cdx.json}
 
       - name: Start the hardened container
@@ -165,13 +165,14 @@ jobs:
           docker run -d --name atm-auth -p 8081:8080 -e ATM_API_KEY --read-only --cap-drop ALL "$IMAGE"
           EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8081
 
-      - name: DAST - OWASP ZAP API scan
-        uses: zaproxy/action-api-scan@v0.9.0
-        with:
-          target: http://localhost:8080/openapi.json
-          format: openapi
-          allow_issue_writing: false
-          artifact_name: zap-report
+      - name: DAST - OWASP ZAP API scan (driven by /openapi.json)
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-api-scan.py -t http://localhost:8080/openapi.json -f openapi -r zap-report.html -I
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with: {name: "zap-report-${{ env.VERSION }}", path: zap/zap-report.html}
 
       - name: Container logs
         if: always()

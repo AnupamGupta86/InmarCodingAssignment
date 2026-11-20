@@ -20,7 +20,7 @@ stages:
         pool: {vmImage: ubuntu-latest}
         steps:
           - task: UsePythonVersion@0
-            inputs: {versionSpec: "3.12"}
+            inputs: {versionSpec: "3.13"}
           - script: pip install -r requirements-dev.txt
             workingDirectory: atm-dispenser
             displayName: Install dev tools
@@ -44,10 +44,9 @@ stages:
       - job: UnitTests
         strategy:
           matrix:
-            Linux_Python39:    {imageName: ubuntu-latest,  pythonVersion: "3.9"}
-            Linux_Python312:   {imageName: ubuntu-latest,  pythonVersion: "3.12"}
-            Windows_Python312: {imageName: windows-latest, pythonVersion: "3.12"}
-            Mac_Python313:     {imageName: macOS-latest,   pythonVersion: "3.13"}
+            Linux:   {imageName: ubuntu-latest,  pythonVersion: "3.13"}
+            Windows: {imageName: windows-latest, pythonVersion: "3.13"}
+            Mac:     {imageName: macOS-latest,   pythonVersion: "3.13"}
         pool: {vmImage: $(imageName)}
         steps:
           - task: UsePythonVersion@0
@@ -62,7 +61,7 @@ stages:
         pool: {vmImage: ubuntu-latest}
         steps:
           - task: UsePythonVersion@0
-            inputs: {versionSpec: "3.12"}
+            inputs: {versionSpec: "3.13"}
           - script: |
               pip install -r requirements-dev.txt
               coverage run -m unittest discover

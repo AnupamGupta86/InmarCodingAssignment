@@ -1,5 +1,5 @@
 # Runtime image only: tests run in CI before this image is built.
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # Build version, e.g. 1.0.20261120183012 (see scripts/version.sh).
 ARG VERSION=dev

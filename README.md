@@ -41,7 +41,7 @@ Key features:
   amount"* and leaves the inventory untouched; invalid input gets a clear message.
 - **Thread-safe:** a lock makes "allocate notes → update inventory" one indivisible step.
 - **Three ways to use it:** a Python library, a command-line program and a hardened HTTP/JSON service.
-- **Standard library only:** Python 3.8 or newer, nothing to install.
+- **Standard library only:** Python 3.13, nothing to install.
 - **Tested and shipped like production code:** 183 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
 
@@ -164,7 +164,7 @@ Commands are for macOS/Linux; on Windows use `python` instead of `python3`.
 
 | Needed for | Tool | Check |
 |---|---|---|
-| Everything | Python 3.8+ | `python3 --version` |
+| Everything | Python 3.13 | `python3 --version` |
 | Container steps (5.5) | Docker | `docker version` |
 | Optional dev checks (5.6) | ruff, mypy, coverage, pip-audit | `pip install -r atm-dispenser/requirements-dev.txt` |
 
@@ -510,7 +510,7 @@ Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same s
  quality ───────────┐   ruff (incl. the Bandit security rules), mypy, pip-audit
  codeql             │   CodeQL security analysis (security-extended queries)
  secrets            │   gitleaks over the full git history
- test (3 OS × 3 Py) │   unit, integration, concurrency, fuzz, CLI, doctest
+ test (3 OS, Py 3.13)│   unit, integration, concurrency, fuzz, CLI, doctest
  coverage           │   fails below 95 %
                     ▼   (the image is built only if all of the above pass)
  container            version (major.minor.datetime) → hadolint → build → validate image
