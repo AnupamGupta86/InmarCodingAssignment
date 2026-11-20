@@ -1,5 +1,5 @@
 # Dev and CI tools only; the application has no dependencies.
-ruff==0.16.9
+ruff==0.17.5
 mypy==2.3.1
 coverage==7.6.9
 pip-audit==2.7.3
