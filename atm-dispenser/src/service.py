@@ -32,6 +32,7 @@ import hmac
 import json
 import logging
 import os
+import queue
 import re
 import signal
 import socket
@@ -384,10 +385,14 @@ class ATMServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128  # the default (5) drops connections when many customers arrive at once
     max_connections = 64      # one thread each; more are answered 503 instead of exhausting threads
+    max_waiting_rejections = 256  # connections waiting for their 503; beyond this they are just closed
 
     def __init__(self, atm: CashDispenser, host: str = "127.0.0.1", port: int = 8080,
                  api_key: str | None = None, version: str = "dev"):
         self._connection_slots = threading.BoundedSemaphore(self.max_connections)
+        # One helper thread answers the extra connections with 503, so the server never blocks on them.
+        self._rejections: queue.Queue[Any] = queue.Queue(maxsize=self.max_waiting_rejections)
+        threading.Thread(target=self._reject_waiting_connections, name="atm-reject-busy", daemon=True).start()
         super().__init__((host, port), ATMRequestHandler)
         self.atm = atm
         self.api_key = api_key
@@ -395,7 +400,10 @@ class ATMServer(ThreadingHTTPServer):
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._connection_slots.acquire(blocking=False):
-            self._reject_busy(request)
+            try:
+                self._rejections.put_nowait(request)
+            except queue.Full:  # far too many at once: close without an answer
+                self.shutdown_request(request)
             return
         try:
             super().process_request(request, client_address)  # starts a thread
@@ -409,21 +417,33 @@ class ATMServer(ThreadingHTTPServer):
         finally:
             self._connection_slots.release()
 
-    def _reject_busy(self, request: Any) -> None:
+    def _reject_waiting_connections(self) -> None:
+        while True:
+            request = self._rejections.get()
+            with contextlib.suppress(OSError):
+                self._reject_busy(request)
+            self.shutdown_request(request)
+
+    @staticmethod
+    def _reject_busy(request: Any) -> None:
+        """Answer 503 and close gracefully.
+
+        Closing while the client's request is still unread makes the operating system send a
+        reset, which can wipe out the 503 before the client reads it (seen on macOS). So: send the
+        answer, signal the end of it, and read what the client sends until it closes (at most 1 s).
+        """
         body = json.dumps({"error": "Too many connections; try again shortly"}).encode()
         headers = "".join(f"{name}: {value}\r\n" for name, value in SECURITY_HEADERS.items())
         response = ("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 1\r\n"
                     f"{headers}Connection: close\r\nContent-Length: {len(body)}\r\n\r\n").encode() + body
-        with contextlib.suppress(OSError):
-            request.settimeout(1)
-            request.sendall(response)
-            # Close gracefully: closing with the client's request still unread makes the operating
-            # system send a reset, which can wipe out the 503 before the client reads it (macOS).
-            request.shutdown(socket.SHUT_WR)
-            request.settimeout(0.1)
-            while request.recv(4096):
-                pass
-        self.shutdown_request(request)
+        request.settimeout(1)
+        request.sendall(response)
+        request.shutdown(socket.SHUT_WR)
+        deadline = time.monotonic() + 1
+        while (remaining := deadline - time.monotonic()) > 0:
+            request.settimeout(remaining)
+            if not request.recv(4096):
+                break
 
     def server_bind(self) -> None:
         """Bind without a reverse DNS lookup of our own address.

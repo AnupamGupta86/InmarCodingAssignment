@@ -792,11 +792,11 @@ class HostileInputRegressionTests(unittest.TestCase):
 
     def test_many_denominations_are_refused_instead_of_slowing_every_withdrawal(self):
         with self.assertRaisesRegex(InvalidInventoryError, "Too many denominations: 51"):
-            CashDispenser({value: 1 for value in range(1, 52)})
-        CashDispenser({value: 1 for value in range(1, 51)})  # 50 is still fine
+            CashDispenser(dict.fromkeys(range(1, 52), 1))
+        CashDispenser(dict.fromkeys(range(1, 51), 1))  # 50 is still fine
 
     def test_a_realistic_large_inventory_is_still_calculated(self):
-        atm = CashDispenser({d: 1000 for d in (1, 2, 5, 10, 20, 50, 100, 200, 500, 2000)})
+        atm = CashDispenser(dict.fromkeys((1, 2, 5, 10, 20, 50, 100, 200, 500, 2000), 1000))
         self.assertEqual(sum(v * c for v, c in atm.dispense(199_999).items()), 199_999)
 
     def test_long_input_is_never_echoed_in_full(self):
