@@ -456,12 +456,20 @@ class ConfigTests(unittest.TestCase):
             [sys.executable, str(src / "service.py")], cwd=src.parent.parent, stdout=subprocess.PIPE, text=True,
             env={**os.environ, "ATM_PORT": "0", "PYTHONDONTWRITEBYTECODE": "1"},
         )
+        watchdog = threading.Timer(30, process.kill)  # never hang the test run, whatever happens
+        watchdog.start()
         try:
-            first_lines = [process.stdout.readline() for _ in range(2)]
-            self.assertTrue(any("listening on" in line for line in first_lines), first_lines)
+            lines = []
+            while not any("listening on" in line for line in lines):
+                line = process.stdout.readline()
+                if not line:  # the process ended without starting
+                    break
+                lines.append(line)
+            self.assertTrue(any("listening on" in line for line in lines), lines)
             process.send_signal(signal.SIGTERM)
             self.assertEqual(process.wait(timeout=10), 0)
         finally:
+            watchdog.cancel()
             process.kill()
             process.stdout.close()
 

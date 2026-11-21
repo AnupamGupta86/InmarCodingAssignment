@@ -20,14 +20,19 @@ COPY atm-dispenser/src/ ./
 
 # Patch the OS packages, and remove pip and setuptools: the app uses only the standard library,
 # so the image needs no packaging tools (and they bring their own vulnerabilities).
+# DEBIAN_FRONTEND applies to this build step only: apt has no terminal to ask questions on.
+# The last line makes the code readable (not writable) by the app user, whatever the file
+# permissions were on the machine that built the image.
 # hadolint ignore=DL3005
-RUN apt-get update \
+RUN export DEBIAN_FRONTEND=noninteractive \
+    && apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
     && site_packages="$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
     && rm -rf "${site_packages:?}"/* /usr/local/lib/python3*/ensurepip /usr/local/bin/pip* \
     && useradd --no-create-home --uid 10001 --shell /usr/sbin/nologin atm \
-    && mkdir /data && chown 10001 /data
+    && mkdir /data && chown 10001 /data \
+    && chmod -R a+rX,go-w /app
 USER 10001
 
 # Optional: keep the inventory in a JSON file on a volume, e.g.

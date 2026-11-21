@@ -14,6 +14,7 @@
 10. [CI/CD and DevSecOps](#10-cicd-and-devsecops)
 11. [Security](#11-security)
 12. [Requirements checklist](#12-requirements-checklist)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -42,15 +43,6 @@ Key features:
 - **Small and object-oriented:** three source files, standard library only, Python 3.14.8.
 - **Tested and shipped like production code:** 198 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
-
-**Quick start** (macOS/Linux with Python 3.14.8 and Docker; details in [section 6](#6-setup-and-validation-steps)):
-
-```bash
-git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser        # 198 tests
-python3 atm-dispenser/src/cli.py 2700                # the brief's example
-./scripts/run-container.sh                           # test, build, validate and run the service
-```
 
 ---
 
@@ -297,7 +289,7 @@ sequenceDiagram
             H-->>C: 422 {"error": "Cannot dispense requested amount"}
         end
     end
-    H->>H: JSON log line (status, duration, request id; never the body)
+    H->>H: JSON log line with status, duration and request id (never the body)
 ```
 
 **Service start-up and shutdown**
@@ -481,6 +473,15 @@ All commands run from the repository root and use `python3`.
 | macOS, Linux | `python3` 3.14.8 for the CLI and tests; Docker for the service |
 | Windows | Docker (sections 6.4 and 7.2), or the macOS/Linux commands inside WSL |
 
+**Quick start** (macOS/Linux with Python 3.14.8 and Docker; each step is explained in 6.1–6.4):
+
+```bash
+git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
+python3 -m unittest discover -s atm-dispenser        # 198 tests
+python3 atm-dispenser/src/cli.py 2700                # the brief's example
+./scripts/run-container.sh                           # test, build, validate and run the service
+```
+
 ### 6.1 Prerequisites
 
 | Needed for | Tool | Check |
@@ -581,18 +582,6 @@ make lint coverage security            # ruff (incl. security rules) + mypy, cov
 ```
 
 The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps](#10-cicd-and-devsecops)).
-
-### 6.6 Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `python3: command not found` (Windows) | Use the Docker commands in 6.4, or WSL |
-| `Address already in use` | Another process uses port 8080: `PORT=8081 ./scripts/run-container.sh`, or stop it (`lsof -i :8080`) |
-| `401 Missing or invalid API key` | Send `Authorization: Bearer <key>` with the container's key (`docker exec atm-dispenser printenv ATM_API_KEY`) |
-| `415 Content-Type must be application/json` | Add `-H 'Content-Type: application/json'` |
-| Image validation fails | The failing check is printed; rebuild with `--build-arg VERSION=...` and check the Dockerfile |
-| Container not `healthy` | `docker logs atm-dispenser`; check port 8080 is free; `docker inspect atm-dispenser` shows the health-check output |
-| `Cannot connect to the Docker daemon` | Start Docker Desktop and try again |
 
 ---
 
@@ -822,3 +811,19 @@ Please open a private security advisory on the GitHub repository rather than a p
 | R12 | Positive and negative test cases | 198 tests ([section 9](#9-testing-strategy)); every validation error and every "cannot dispense" path |
 | R13 | README: design, how to run and test, complexity | Sections [3](#3-architecture-high-level-and-low-level-design), [6](#6-setup-and-validation-steps), [9](#9-testing-strategy) and [3.3.3](#333-time-and-space-complexity) |
 | R14 | Readable, maintainable code | Three small object-oriented modules with type hints; ruff and mypy checked in CI |
+
+---
+
+## 13. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `python3: command not found` (Windows) | Use the Docker commands in 6.4, or WSL |
+| `Address already in use` | Another process uses port 8080: `PORT=8081 ./scripts/run-container.sh`, or stop it (`lsof -i :8080`) |
+| `401 Missing or invalid API key` | Send `Authorization: Bearer <key>` with the container's key (`docker exec atm-dispenser printenv ATM_API_KEY`) |
+| `415 Content-Type must be application/json` | Add `-H 'Content-Type: application/json'` |
+| Image validation fails | The failing check is printed; rebuild with `--build-arg VERSION=...` and check the Dockerfile |
+| Container not `healthy` | `docker logs atm-dispenser`; check port 8080 is free; `docker inspect atm-dispenser` shows the health-check output |
+| `Cannot connect to the Docker daemon` | Start Docker Desktop and try again |
+| `Cannot use the state file` / `Cannot read the state file` | The folder must exist and be writable; delete a corrupt file to start again from `--inventory` / `ATM_INVENTORY` |
+| Version check fails: time zone `Asia/Kolkata` not available | Install the time zone data (`tzdata`) on the build machine |
