@@ -691,6 +691,7 @@ one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service 
 | `make shared-inventory` | `scripts/shared-inventory-test.sh` |
 | `make container` / `make container-stop` | `scripts/run-container.sh` / stop it |
 | `make smoke` | smoke test a running service (`URL=...`) |
+| `make dev-tools` | check the dev tools are installed in the active Python (prints setup steps if not) |
 | `make lint coverage security` | dev checks (inside the virtual environment from [5.5](#55-optional-quality-and-security-checks)) |
 
 ---

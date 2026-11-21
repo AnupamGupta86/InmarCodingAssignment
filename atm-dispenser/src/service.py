@@ -54,9 +54,11 @@ from dispenser import (
     DEFAULT_MAX_WITHDRAWAL,
     ATMError,
     CashDispenser,
+    DuplicateKeyError,
     InventoryStore,
     Notes,
     Validator,
+    reject_duplicate_keys,
 )
 
 MAX_BODY_BYTES = 1024
@@ -76,6 +78,11 @@ _SAFE_VERSION = re.compile(r"^[A-Za-z0-9.+-]{1,64}$")
 log = logging.getLogger("atm.service")
 
 
+def _as_json_notes(notes: Notes) -> dict[str, int]:
+    """JSON object keys are always text, so {500: 3} is sent as {"500": 3}."""
+    return {str(value): count for value, count in notes.items()}
+
+
 # Configuration ----------------------------------------------------------------------------
 
 class ConfigError(ValueError):
@@ -84,6 +91,8 @@ class ConfigError(ValueError):
 
 @dataclass
 class ServiceConfig:
+    """The checked settings the service starts with (from ATM_* environment variables)."""
+
     atm: CashDispenser
     host: str
     port: int
@@ -98,7 +107,7 @@ class ServiceConfig:
             raise ConfigError(f"ATM_PORT must be a number from 0 to 65535, got {port_text!r}")
 
         try:
-            max_withdrawal = Validator.amount(environ.get("ATM_MAX_WITHDRAWAL", str(DEFAULT_MAX_WITHDRAWAL)))
+            max_withdrawal = Validator.amount(environ.get("ATM_MAX_WITHDRAWAL", DEFAULT_MAX_WITHDRAWAL))
         except ATMError as error:
             raise ConfigError(f"ATM_MAX_WITHDRAWAL is invalid: {error}") from None
 
@@ -111,7 +120,8 @@ class ServiceConfig:
             raise ConfigError(f"ATM_API_KEY must be at least {MIN_API_KEY_LENGTH} characters long")
 
         try:
-            inventory = Validator.inventory(Validator.parse_inventory(environ.get("ATM_INVENTORY", DEFAULT_INVENTORY)))
+            inventory_text = environ.get("ATM_INVENTORY", DEFAULT_INVENTORY)
+            inventory = Validator.inventory(Validator.parse_inventory(inventory_text))
         except ATMError as error:
             raise ConfigError(f"ATM_INVENTORY is invalid: {error}") from None
 
@@ -146,6 +156,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
     }
     PROTECTED = {"/inventory", "/withdrawals"}
 
+    # Every method goes through _handle; PUT, PATCH and DELETE exist only to answer 405 in JSON.
     def do_GET(self) -> None:
         self._handle("GET")
 
@@ -162,6 +173,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         self._handle("DELETE")
 
     def _handle(self, method: str) -> None:
+        """Route one request: unknown route -> 404/405, then the API key check, then the endpoint."""
         self._started = time.perf_counter()
         self._body_read = False  # the same handler serves every request on a keep-alive connection
         incoming_id = self.headers.get("X-Request-ID", "")
@@ -211,7 +223,8 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             return
         except OSError:  # the state file could not be saved: the withdrawal did not happen
             log.exception("cannot save the state file", extra={"request_id": self._request_id})
-            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Inventory could not be saved; nothing was dispensed"})
+            self._send(HTTPStatus.SERVICE_UNAVAILABLE,
+                       {"error": "Inventory could not be saved; nothing was dispensed"})
             return
 
         if notes is None:
@@ -262,15 +275,16 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "Content-Type must be application/json"})
             return None
         try:
-            payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
-        except _DuplicateField as error:
+            payload = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+        except DuplicateKeyError as error:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return None
         except (UnicodeDecodeError, ValueError, RecursionError):
             self._send(HTTPStatus.BAD_REQUEST, {"error": "Request body must be valid JSON"})
             return None
         if not isinstance(payload, dict):
-            self._send(HTTPStatus.BAD_REQUEST, {"error": 'Request body must be a JSON object like {"amount": 2700}'})
+            self._send(HTTPStatus.BAD_REQUEST,
+                       {"error": 'Request body must be a JSON object like {"amount": 2700}'})
             return None
         return payload
 
@@ -301,11 +315,13 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         try:
             raw = self.rfile.read(length)
         except TimeoutError:
-            self._send(HTTPStatus.REQUEST_TIMEOUT, {"error": "Timed out waiting for the request body"}, close=True)
+            self._send(HTTPStatus.REQUEST_TIMEOUT,
+                       {"error": "Timed out waiting for the request body"}, close=True)
             return None
         self._body_read = True
         if len(raw) < length:
-            self._send(HTTPStatus.BAD_REQUEST, {"error": "Request body is shorter than Content-Length"}, close=True)
+            self._send(HTTPStatus.BAD_REQUEST,
+                       {"error": "Request body is shorter than Content-Length"}, close=True)
             return None
         return raw
 
@@ -359,22 +375,6 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         """Replace the default unstructured stderr logging (it would print raw request lines)."""
 
 
-class _DuplicateField(ValueError):
-    pass
-
-
-def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """{"amount": 100, "amount": 2700} is ambiguous: a proxy or log may read the other value."""
-    keys = [key for key, _ in pairs]
-    duplicates = sorted({key for key in keys if keys.count(key) > 1})
-    if duplicates:
-        raise _DuplicateField(f"Duplicate field(s): {', '.join(duplicates)}")
-    return dict(pairs)
-
-
-def _as_json_notes(notes: Notes) -> dict[str, int]:
-    return {str(value): count for value, count in notes.items()}
-
 
 # Server and start-up ----------------------------------------------------------------------
 
@@ -383,22 +383,23 @@ class ATMServer(ThreadingHTTPServer):
     keeps concurrent withdrawals from taking the same notes."""
 
     daemon_threads = True
-    request_queue_size = 128  # the default (5) drops connections when many customers arrive at once
-    max_connections = 64      # one thread each; more are answered 503 instead of exhausting threads
-    max_waiting_rejections = 256  # connections waiting for their 503; beyond this they are just closed
+    request_queue_size = 128       # the default (5) drops connections when many customers arrive at once
+    max_connections = 64           # one thread each; more are answered 503 instead of exhausting threads
+    max_waiting_rejections = 256   # connections waiting for their 503; beyond this they are just closed
 
     def __init__(self, atm: CashDispenser, host: str = "127.0.0.1", port: int = 8080,
                  api_key: str | None = None, version: str = "dev"):
         self._connection_slots = threading.BoundedSemaphore(self.max_connections)
-        # One helper thread answers the extra connections with 503, so the server never blocks on them.
+        # One helper thread answers the extra connections with 503, so the server never waits on them.
         self._rejections: queue.Queue[Any] = queue.Queue(maxsize=self.max_waiting_rejections)
-        threading.Thread(target=self._reject_waiting_connections, name="atm-reject-busy", daemon=True).start()
+        threading.Thread(target=self._answer_busy_connections, name="atm-busy", daemon=True).start()
         super().__init__((host, port), ATMRequestHandler)
         self.atm = atm
         self.api_key = api_key
         self.version = version
 
     def process_request(self, request: Any, client_address: Any) -> None:
+        """Serve the connection in its own thread, or queue it for a 503 when all slots are taken."""
         if not self._connection_slots.acquire(blocking=False):
             try:
                 self._rejections.put_nowait(request)
@@ -417,15 +418,16 @@ class ATMServer(ThreadingHTTPServer):
         finally:
             self._connection_slots.release()
 
-    def _reject_waiting_connections(self) -> None:
+    def _answer_busy_connections(self) -> None:
+        """Runs in the helper thread for the whole life of the server."""
         while True:
             request = self._rejections.get()
             with contextlib.suppress(OSError):
-                self._reject_busy(request)
+                self._send_busy_response(request)
             self.shutdown_request(request)
 
     @staticmethod
-    def _reject_busy(request: Any) -> None:
+    def _send_busy_response(request: Any) -> None:
         """Answer 503 and close gracefully.
 
         Closing while the client's request is still unread makes the operating system send a
@@ -434,8 +436,14 @@ class ATMServer(ThreadingHTTPServer):
         """
         body = json.dumps({"error": "Too many connections; try again shortly"}).encode()
         headers = "".join(f"{name}: {value}\r\n" for name, value in SECURITY_HEADERS.items())
-        response = ("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 1\r\n"
-                    f"{headers}Connection: close\r\nContent-Length: {len(body)}\r\n\r\n").encode() + body
+        response = (
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Content-Type: application/json\r\n"
+            "Retry-After: 1\r\n"
+            f"{headers}"
+            "Connection: close\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n"
+        ).encode() + body
         request.settimeout(1)
         request.sendall(response)
         request.shutdown(socket.SHUT_WR)
@@ -493,7 +501,7 @@ class ATMService:
         if config.api_key is None:
             log.warning("ATM_API_KEY is not set: /inventory and /withdrawals are open to anyone")
 
-        def stop(signum, frame):  # docker stop sends SIGTERM
+        def stop(_signal_number, _frame):  # docker stop sends SIGTERM; Ctrl+C sends SIGINT
             log.info("shutting down")
             threading.Thread(target=server.shutdown, daemon=True).start()
 
@@ -519,41 +527,72 @@ class ATMService:
 # attack every endpoint.
 
 def _json_response(description: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"description": description, "content": {"application/json": {"schema": schema or {"type": "object"}}}}
+    content = {"application/json": {"schema": schema or {"type": "object"}}}
+    return {"description": description, "content": content}
 
 
 _NOTES_SCHEMA = {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0},
                  "example": {"500": 3, "200": 9, "100": 20}}
 _ERROR_SCHEMA = {"type": "object", "properties": {"error": {"type": "string"}}}
+_WITHDRAWAL_REQUEST = {
+    "type": "object",
+    "required": ["amount"],
+    "additionalProperties": False,
+    "properties": {"amount": {"type": "integer", "minimum": 1, "example": 2700}},
+}
+_WITHDRAWAL_RESULT = {
+    "type": "object",
+    "properties": {
+        "amount": {"type": "integer"},
+        "dispensed": _NOTES_SCHEMA,
+        "total_notes": {"type": "integer"},
+        "inventory": _NOTES_SCHEMA,
+    },
+}
+_SecurityRules = list[dict[str, list[str]]]
+_OPEN: _SecurityRules = []                       # no API key needed
+_PROTECTED: _SecurityRules = [{"apiKey": []}]    # needs "Authorization: Bearer <key>" when ATM_API_KEY is set
+_UNAUTHORISED = _json_response("Missing or invalid API key", _ERROR_SCHEMA)
 
 OPENAPI_SPEC: dict[str, Any] = {
     "openapi": "3.0.3",
-    "info": {"title": "ATM Cash Dispenser API", "version": "1.0.0",
-             "description": "Dispenses withdrawals with the fewest notes from a limited inventory."},
+    "info": {
+        "title": "ATM Cash Dispenser API",
+        "version": "1.0.0",
+        "description": "Dispenses withdrawals with the fewest notes from a limited inventory.",
+    },
     "components": {"securitySchemes": {"apiKey": {"type": "http", "scheme": "bearer"}}},
     "paths": {
-        "/health": {"get": {"summary": "Liveness probe and build version", "security": [],
-                            "responses": {"200": _json_response("Service is alive")}}},
-        "/inventory": {"get": {"summary": "Notes currently in the ATM", "security": [{"apiKey": []}],
-                               "responses": {"200": _json_response("Current inventory"),
-                                             "401": _json_response("Missing or invalid API key", _ERROR_SCHEMA)}}},
+        "/health": {"get": {
+            "summary": "Liveness probe and build version",
+            "security": _OPEN,
+            "responses": {"200": _json_response("Service is alive")},
+        }},
+        "/inventory": {"get": {
+            "summary": "Notes currently in the ATM",
+            "security": _PROTECTED,
+            "responses": {"200": _json_response("Current inventory"), "401": _UNAUTHORISED},
+        }},
         "/withdrawals": {"post": {
             "summary": "Withdraw an amount",
-            "security": [{"apiKey": []}],
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["amount"], "additionalProperties": False,
-                "properties": {"amount": {"type": "integer", "minimum": 1, "example": 2700}}}}}},
+            "security": _PROTECTED,
+            "requestBody": {
+                "required": True,
+                "content": {"application/json": {"schema": _WITHDRAWAL_REQUEST}},
+            },
             "responses": {
-                "200": _json_response("Cash dispensed", {"type": "object", "properties": {
-                    "amount": {"type": "integer"}, "dispensed": _NOTES_SCHEMA,
-                    "total_notes": {"type": "integer"}, "inventory": _NOTES_SCHEMA}}),
+                "200": _json_response("Cash dispensed", _WITHDRAWAL_RESULT),
                 "400": _json_response("Invalid amount or request body", _ERROR_SCHEMA),
-                "401": _json_response("Missing or invalid API key", _ERROR_SCHEMA),
-                "422": _json_response("Cannot dispense requested amount (inventory unchanged)", _ERROR_SCHEMA),
+                "401": _UNAUTHORISED,
+                "422": _json_response("Cannot dispense (inventory unchanged)", _ERROR_SCHEMA),
+                "503": _json_response("Inventory not saved, or too many connections", _ERROR_SCHEMA),
             },
         }},
-        "/openapi.json": {"get": {"summary": "This document", "security": [],
-                                  "responses": {"200": _json_response("OpenAPI document")}}},
+        "/openapi.json": {"get": {
+            "summary": "This document",
+            "security": _OPEN,
+            "responses": {"200": _json_response("OpenAPI document")},
+        }},
     },
 }
 

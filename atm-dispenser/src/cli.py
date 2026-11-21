@@ -4,12 +4,13 @@
     python3 atm-dispenser/src/cli.py --inventory "{ 500: 8, 200: 10, 100: 20 }" 2700 600
     python3 atm-dispenser/src/cli.py --inventory "4:1, 3:2" 6
     python3 atm-dispenser/src/cli.py --state-file atm.json 2700      # inventory kept in atm.json
-    python3 atm-dispenser/src/cli.py                              # interactive: amounts, i = inventory, q = quit
+    python3 atm-dispenser/src/cli.py                              # interactive (i = inventory, q = quit)
 
 Several amounts are withdrawn one after another from the same ATM, so you can watch the
-inventory go down. Exit code: 0 = every withdrawal succeeded, 1 = at least one could not be
-dispensed, 2 = invalid input or a
-state file that cannot be read or saved.
+inventory go down.
+
+Exit code: 0 = every withdrawal succeeded, 1 = at least one could not be dispensed,
+2 = invalid input, or a state file that cannot be read or saved.
 """
 
 import argparse
@@ -32,14 +33,19 @@ from dispenser import (
 CURRENCY = "₹"
 
 EXIT_OK = 0
-EXIT_NOT_DISPENSED = 1
-EXIT_INVALID_INPUT = 2
+EXIT_NOT_DISPENSED = 1     # "Cannot dispense requested amount"
+EXIT_INVALID_INPUT = 2     # invalid input, or a state file that cannot be read or saved
+
+QUIT_COMMANDS = ("q", "quit", "exit")
+INVENTORY_COMMANDS = ("i", "inventory")
 
 
 class CommandLine:
     """Parses the arguments, runs the withdrawals and prints the results."""
 
-    def __init__(self, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr):
+    def __init__(
+        self, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr
+    ):
         self.stdin = stdin
         self.out = stdout
         self.err = stderr
@@ -62,7 +68,7 @@ class CommandLine:
             amount = Validator.amount(amount_text)
             notes = atm.dispense(amount)
         except ATMError as error:
-            self._print(f"Invalid amount {Validator._shown(amount_text)}: {error}", error=True)
+            self._print(f"Invalid amount {Validator.preview(amount_text)}: {error}", error=True)
             return EXIT_INVALID_INPUT
         except OSError as error:  # the state file could not be saved: nothing was dispensed
             self._print(f"Cannot save the state file ({error}); nothing was dispensed", error=True)
@@ -83,9 +89,10 @@ class CommandLine:
         try:
             for line in lines:
                 text = line.strip()
-                if text.lower() in ("q", "quit", "exit"):
+                command = text.lower()
+                if command in QUIT_COMMANDS:
                     break
-                if text.lower() in ("i", "inventory"):
+                if command in INVENTORY_COMMANDS:
                     self.show_inventory(atm)
                 elif text:
                     worst = max(worst, self.withdraw(atm, text))
@@ -95,14 +102,16 @@ class CommandLine:
 
     def show_inventory(self, atm: CashDispenser) -> None:
         """Print the notes in the ATM and their total value."""
-        self._print(f"ATM inventory: {self.format_notes(atm.inventory)} (total cash {CURRENCY}{atm.total_cash})")
+        notes = self.format_notes(atm.inventory)
+        self._print(f"ATM inventory: {notes} (total cash {CURRENCY}{atm.total_cash})")
 
     @staticmethod
     def format_notes(notes: Notes) -> str:
         """{500: 5, 200: 1} -> "₹500 × 5, ₹200 × 1" (largest denomination first)."""
         if not notes:
             return "no notes"
-        return ", ".join(f"{CURRENCY}{value} × {count}" for value, count in sorted(notes.items(), reverse=True))
+        largest_first = sorted(notes.items(), reverse=True)
+        return ", ".join(f"{CURRENCY}{value} × {count}" for value, count in largest_first)
 
     @classmethod
     def format_withdrawal(cls, amount: int, notes: Notes | None) -> str:
@@ -112,7 +121,10 @@ class CommandLine:
         total = sum(notes.values())
         return f"Withdrawal {CURRENCY}{amount}: {cls.format_notes(notes)} (Total notes dispensed: {total})"
 
-    def _create_atm(self, inventory_text: str, max_withdrawal: str, state_file: str | None) -> CashDispenser | None:
+    def _create_atm(
+        self, inventory_text: str, max_withdrawal: str, state_file: str | None
+    ) -> CashDispenser | None:
+        """Build the ATM from the options, or print what is wrong and return None."""
         try:
             inventory = Validator.parse_inventory(inventory_text)
             store = InventoryStore(state_file) if state_file else None
@@ -132,7 +144,8 @@ class CommandLine:
             description="Simulate an ATM cash dispenser that pays out with the fewest notes.",
         )
         parser.add_argument("--inventory", default=DEFAULT_INVENTORY,
-                            help=f'notes in the ATM as "denomination:count, ..." (default: "{DEFAULT_INVENTORY}")')
+                            help='notes in the ATM as "denomination:count, ..." '
+                                 f'(default: "{DEFAULT_INVENTORY}")')
         parser.add_argument("--max-withdrawal", default=str(DEFAULT_MAX_WITHDRAWAL),
                             help=f"largest amount per withdrawal (default: {DEFAULT_MAX_WITHDRAWAL})")
         parser.add_argument("--state-file", metavar="PATH",
