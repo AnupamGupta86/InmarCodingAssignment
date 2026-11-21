@@ -31,7 +31,7 @@ def call(base_url, method, path, body=None, authorised=True, content_type="appli
     if authorised and API_KEY:
         request.add_header("Authorization", f"Bearer {API_KEY}")
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
+        with urllib.request.urlopen(request, timeout=10) as response:
             return response.status, _json(response.read()), dict(response.headers)
     except urllib.error.HTTPError as error:
         with error:  # an error response is still an open connection: close it

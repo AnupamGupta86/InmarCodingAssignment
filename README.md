@@ -786,14 +786,14 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 | Check | Tool | Fails the build on |
 |---|---|---|
 | Secret scanning (full history) | gitleaks | any secret |
-| SAST | ruff `S` rules (the Bandit rule set), CodeQL (`security-extended`) | any finding |
+| SAST | ruff `S` rules (the Bandit rule set), CodeQL (`security-extended`) | any finding (CodeQL findings are also shown in the Security tab) |
 | Dependency audit | pip-audit | known vulnerable version |
 | Dockerfile lint | hadolint | warning or worse |
 | Image validation | `scripts/validate-image.sh` | any failed check |
 | Image CVEs | Trivy | fixable HIGH/CRITICAL |
 | Dockerfile misconfiguration | Trivy config | HIGH/CRITICAL |
 | Running container | health check, non-root and read-only checks, smoke tests | any failure |
-| DAST against the running container | OWASP ZAP API scan (driven by `/openapi.json`) | report published as an artifact |
+| DAST against the running container | OWASP ZAP API scan (driven by `/openapi.json`) | any warning or failure (the report is also published as an artifact) |
 
 ### 7.3 CI/CD Pipeline
 

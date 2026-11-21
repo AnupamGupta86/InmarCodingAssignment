@@ -50,6 +50,21 @@ jobs:
           languages: python
           queries: security-extended
       - uses: github/codeql-action/analyze@v4
+        with: {output: codeql-results}
+      - name: Fail the build on any CodeQL finding
+        # The analysis only uploads its findings to the Security tab; this step makes them blocking.
+        run: |
+          python3 - <<'PY'
+          import glob, json, sys
+          findings = [result["message"]["text"]
+                      for path in glob.glob("codeql-results/*.sarif")
+                      for run in json.load(open(path))["runs"]
+                      for result in run.get("results", [])]
+          print(f"CodeQL findings: {len(findings)}")
+          for text in findings:
+              print("  -", text)
+          sys.exit(1 if findings else 0)
+          PY
 
   secrets:
     name: Secret scan (gitleaks)
@@ -164,11 +179,11 @@ jobs:
           docker run -d --name atm-auth -p 8081:8080 -e ATM_API_KEY --read-only --cap-drop ALL "$IMAGE"
           EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8081
 
-      - name: DAST - OWASP ZAP API scan (driven by /openapi.json)
+      - name: DAST - OWASP ZAP API scan (driven by /openapi.json; any warning fails the build)
         run: |
           mkdir -p zap && chmod 777 zap
           docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
-            zap-api-scan.py -t http://localhost:8080/openapi.json -f openapi -r zap-report.html -I
+            zap-api-scan.py -t http://localhost:8080/openapi.json -f openapi -r zap-report.html
       - uses: actions/upload-artifact@v6
         if: always()
         with: {name: "zap-report-${{ env.VERSION }}", path: zap/zap-report.html}

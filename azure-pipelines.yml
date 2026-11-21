@@ -125,8 +125,8 @@ stages:
           - script: |
               docker run --rm --network host -v "$(Build.ArtifactStagingDirectory):/zap/wrk:rw" \
                 ghcr.io/zaproxy/zaproxy:stable zap-api-scan.py \
-                -t http://localhost:8080/openapi.json -f openapi -r zap-report.html -I
-            displayName: DAST (OWASP ZAP API scan)
+                -t http://localhost:8080/openapi.json -f openapi -r zap-report.html
+            displayName: DAST (OWASP ZAP API scan; any warning fails the build)
           - publish: $(Build.ArtifactStagingDirectory)/zap-report.html
             artifact: zap-report
             condition: always()
