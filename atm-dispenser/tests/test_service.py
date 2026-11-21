@@ -449,11 +449,18 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(any("ATM_API_KEY is not set" in m for m in messages))
         self.assertIn("shutting down", messages)
 
+    def test_server_start_does_not_look_up_its_own_name_in_dns(self):
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("reverse DNS lookup")):
+            server = ATMServer(CashDispenser({500: 1}), "127.0.0.1", 0)
+        server.server_close()
+        self.assertEqual(server.server_name, "127.0.0.1")
+
     @unittest.skipIf(sys.platform == "win32", "SIGTERM cannot be sent to a process on Windows")
     def test_real_process_stops_on_sigterm(self):
         src = Path(__file__).resolve().parent.parent / "src"
         process = subprocess.Popen(
-            [sys.executable, str(src / "service.py")], cwd=src.parent.parent, stdout=subprocess.PIPE, text=True,
+            [sys.executable, str(src / "service.py")], cwd=src.parent.parent, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,  # a crash message ends up in `lines`
             env={**os.environ, "ATM_PORT": "0", "PYTHONDONTWRITEBYTECODE": "1"},
         )
         watchdog = threading.Timer(30, process.kill)  # never hang the test run, whatever happens

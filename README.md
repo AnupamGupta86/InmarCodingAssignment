@@ -41,7 +41,7 @@ Key features:
 - **Thread-safe:** a lock makes "allocate notes → update inventory" one indivisible step.
 - **Two ways to use it:** a **command-line program** and a **hardened HTTP/JSON service** (in Docker).
 - **Small and object-oriented:** three source files, standard library only, Python 3.14.8.
-- **Tested and shipped like production code:** 198 automated tests, a versioned and validated
+- **Tested and shipped like production code:** 199 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
 
 ---
@@ -416,7 +416,7 @@ the tests pass, and nothing is run until the image is validated.
 
 ```mermaid
 flowchart LR
-    tests["1. Tests<br/>198 automated tests"] -->|pass| version["2. Version<br/>major.minor.datetime (IST)"]
+    tests["1. Tests<br/>199 automated tests"] -->|pass| version["2. Version<br/>major.minor.datetime (IST)"]
     version --> build["3. Build image<br/>atm-dispenser:version"]
     build --> validate["4. Validate image<br/>validate-image.sh"]
     validate -->|pass| run["5. Start hardened container<br/>read-only, non-root, limits"]
@@ -444,7 +444,7 @@ InmarCodingAssignment/
 │   │   ├── dispenser.py             ATM core: Validator, NoteAllocator, CashDispenser, InventoryStore, errors
 │   │   ├── cli.py                   command line: CommandLine
 │   │   └── service.py               HTTP/JSON service: ATMService, ATMServer, ATMRequestHandler
-│   ├── tests/                       198 unittest tests, one file per source file
+│   ├── tests/                       199 unittest tests, one file per source file
 │   │   ├── test_dispenser.py        Validator, NoteAllocator, CashDispenser, state file, concurrency, property tests
 │   │   ├── test_cli.py              CommandLine
 │   │   ├── test_service.py          HTTP service, security, HTTP fuzzing, the smoke-test script
@@ -477,7 +477,7 @@ All commands run from the repository root and use `python3`.
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser        # 198 tests
+python3 -m unittest discover -s atm-dispenser        # 199 tests
 python3 atm-dispenser/src/cli.py 2700                # the brief's example
 ./scripts/run-container.sh                           # test, build, validate and run the service
 ```
@@ -495,7 +495,7 @@ python3 atm-dispenser/src/cli.py 2700                # the brief's example
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
 cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 198 tests ... OK
+python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 199 tests ... OK
 ```
 
 Nothing to install and no `PYTHONPATH` to set: the scripts find their own modules, and the tests
@@ -532,7 +532,7 @@ export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32
 
 | Step | What it does | Pass condition |
 |---|---|---|
-| 1 | Runs the 198 unit, integration and security tests | `OK` (otherwise nothing is built) |
+| 1 | Runs the 199 unit, integration and security tests | `OK` (otherwise nothing is built) |
 | 2 | Builds `atm-dispenser:<version>`, e.g. `atm-dispenser:1.0.20261120183012` | build succeeds |
 | 3 | Validates the image (`scripts/validate-image.sh`) | version label and `ATM_VERSION` match; user 10001; health check defined; port 8080 exposed; `/app` holds only the application modules; no pip or setuptools; size ≤ 250 MB; `/data` writable for the state file; the CLI inside dispenses the brief's example |
 | 4 | Starts container `atm-dispenser` on `127.0.0.1:8080`: read-only filesystem, all capabilities dropped, `no-new-privileges`, 128 MB memory, 0.5 CPU, 100 processes | container running |
@@ -697,7 +697,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 ## 9. Testing strategy
 
 ```bash
-python3 -m unittest discover -s atm-dispenser -v                       # all 198 tests, about 6 seconds
+python3 -m unittest discover -s atm-dispenser -v                       # all 199 tests, about 6 seconds
 python3 -m unittest discover -s atm-dispenser -p test_service.py       # one test file (test_dispenser / test_cli / test_service)
 python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against a running service
 ```
@@ -808,7 +808,7 @@ Please open a private security advisory on the GitHub repository rather than a p
 | R9 | Standard library only | `argparse`, `threading`, `http.server`, `json`, `math`, `functools`, `re`, `dataclasses`, `unittest` |
 | R10 | Validation messages | [Section 8](#8-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
 | R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `test_service.ConcurrentHttpTests`, `scripts/shared-inventory-test.sh` |
-| R12 | Positive and negative test cases | 198 tests ([section 9](#9-testing-strategy)); every validation error and every "cannot dispense" path |
+| R12 | Positive and negative test cases | 199 tests ([section 9](#9-testing-strategy)); every validation error and every "cannot dispense" path |
 | R13 | README: design, how to run and test, complexity | Sections [3](#3-architecture-high-level-and-low-level-design), [6](#6-setup-and-validation-steps), [9](#9-testing-strategy) and [3.3.3](#333-time-and-space-complexity) |
 | R14 | Readable, maintainable code | Three small object-oriented modules with type hints; ruff and mypy checked in CI |
 

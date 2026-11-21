@@ -34,7 +34,8 @@ def call(base_url, method, path, body=None, authorised=True, content_type="appli
         with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310
             return response.status, _json(response.read()), dict(response.headers)
     except urllib.error.HTTPError as error:
-        return error.code, _json(error.read()), dict(error.headers)
+        with error:  # an error response is still an open connection: close it
+            return error.code, _json(error.read()), dict(error.headers)
 
 
 def _json(raw):

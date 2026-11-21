@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import signal
+import socketserver
 import sys
 import threading
 import time
@@ -363,6 +364,17 @@ class ATMServer(ThreadingHTTPServer):
         self.atm = atm
         self.api_key = api_key
         self.version = version
+
+    def server_bind(self) -> None:
+        """Bind without a reverse DNS lookup of our own address.
+
+        The standard HTTPServer calls socket.getfqdn() here only to fill in server_name, which
+        this service never uses. On macOS that lookup can take tens of seconds.
+        """
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 class JsonLogFormatter(logging.Formatter):
