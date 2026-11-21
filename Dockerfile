@@ -26,8 +26,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && site_packages="$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
     && rm -rf "${site_packages:?}"/* /usr/local/lib/python3*/ensurepip /usr/local/bin/pip* \
-    && useradd --no-create-home --uid 10001 --shell /usr/sbin/nologin atm
+    && useradd --no-create-home --uid 10001 --shell /usr/sbin/nologin atm \
+    && mkdir /data && chown 10001 /data
 USER 10001
+
+# Optional: keep the inventory in a JSON file on a volume, e.g.
+#   docker run -v atm-data:/data -e ATM_STATE_FILE=/data/atm.json ...
 
 EXPOSE 8080
 

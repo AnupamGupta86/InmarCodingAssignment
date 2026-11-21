@@ -3,7 +3,8 @@
     python3 atm-dispenser/src/cli.py 2700                         # default inventory from the brief
     python3 atm-dispenser/src/cli.py --inventory "{ 500: 8, 200: 10, 100: 20 }" 2700 600
     python3 atm-dispenser/src/cli.py --inventory "4:1, 3:2" 6
-    python3 atm-dispenser/src/cli.py                              # interactive: type amounts, q to quit
+    python3 atm-dispenser/src/cli.py --state-file atm.json 2700      # inventory kept in atm.json
+    python3 atm-dispenser/src/cli.py                              # interactive: amounts, i = inventory, q = quit
 
 Several amounts are withdrawn one after another from the same ATM, so you can watch the
 inventory go down. Exit code: 0 = every withdrawal succeeded, 1 = at least one could not be
@@ -22,6 +23,7 @@ from dispenser import (
     ATMError,
     CashDispenser,
     InvalidInventoryError,
+    InventoryStore,
     Notes,
     Validator,
 )
@@ -44,7 +46,7 @@ class CommandLine:
     def run(self, argv: list[str] | None = None) -> int:
         """Run the program. Returns the exit code: the worst result of all withdrawals."""
         args = self._parser().parse_args(argv)
-        atm = self._create_atm(args.inventory, args.max_withdrawal)
+        atm = self._create_atm(args.inventory, args.max_withdrawal, args.state_file)
         if atm is None:
             return EXIT_INVALID_INPUT
 
@@ -68,19 +70,28 @@ class CommandLine:
         return EXIT_NOT_DISPENSED if notes is None else EXIT_OK
 
     def run_interactive(self, atm: CashDispenser, lines: Iterable[str]) -> int:
-        """Read one amount per line until 'q', 'quit', 'exit', end of input or Ctrl+C."""
+        """Read one amount per line until 'q', 'quit', 'exit', end of input or Ctrl+C.
+
+        'i' or 'inventory' shows the notes currently in the ATM without withdrawing anything.
+        """
         worst = EXIT_OK
-        self._print("Enter an amount to withdraw (q to quit).")
+        self._print("Enter an amount to withdraw, i to show the inventory, q to quit.")
         try:
             for line in lines:
                 text = line.strip()
                 if text.lower() in ("q", "quit", "exit"):
                     break
-                if text:
+                if text.lower() in ("i", "inventory"):
+                    self.show_inventory(atm)
+                elif text:
                     worst = max(worst, self.withdraw(atm, text))
         except KeyboardInterrupt:  # Ctrl+C ends the session quietly
             self._print("")
         return worst
+
+    def show_inventory(self, atm: CashDispenser) -> None:
+        """Print the notes in the ATM and their total value."""
+        self._print(f"ATM inventory: {self.format_notes(atm.inventory)} (total cash {CURRENCY}{atm.total_cash})")
 
     @staticmethod
     def format_notes(notes: Notes) -> str:
@@ -97,14 +108,17 @@ class CommandLine:
         total = sum(notes.values())
         return f"Withdrawal {CURRENCY}{amount}: {cls.format_notes(notes)} (Total notes dispensed: {total})"
 
-    def _create_atm(self, inventory_text: str, max_withdrawal: str) -> CashDispenser | None:
+    def _create_atm(self, inventory_text: str, max_withdrawal: str, state_file: str | None) -> CashDispenser | None:
         try:
             inventory = Validator.parse_inventory(inventory_text)
-            return CashDispenser(inventory, max_withdrawal=max_withdrawal)
+            store = InventoryStore(state_file) if state_file else None
+            return CashDispenser(inventory, max_withdrawal=max_withdrawal, store=store)
         except InvalidInventoryError as error:
             self._print(f"Invalid inventory: {error}", error=True)
         except ATMError as error:
             self._print(f"Invalid --max-withdrawal: {error}", error=True)
+        except OSError as error:
+            self._print(f"Cannot use the state file: {error}", error=True)
         return None
 
     @staticmethod
@@ -117,6 +131,9 @@ class CommandLine:
                             help=f'notes in the ATM as "denomination:count, ..." (default: "{DEFAULT_INVENTORY}")')
         parser.add_argument("--max-withdrawal", default=str(DEFAULT_MAX_WITHDRAWAL),
                             help=f"largest amount per withdrawal (default: {DEFAULT_MAX_WITHDRAWAL})")
+        parser.add_argument("--state-file", metavar="PATH",
+                            help="keep the inventory in this JSON file: it survives restarts and can be "
+                                 "shared by several processes (an existing file wins over --inventory)")
         parser.add_argument("amounts", nargs="*", help="amounts to withdraw, in order")
         return parser
 

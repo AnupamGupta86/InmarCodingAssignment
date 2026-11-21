@@ -1,4 +1,4 @@
-.PHONY: help version test coverage lint security run smoke docker-build container container-stop
+.PHONY: help version test shared-inventory coverage lint security run smoke docker-build container container-stop
 
 APP := atm-dispenser
 IN_APP := cd $(APP) &&
@@ -11,6 +11,9 @@ help:            ## list targets
 
 test:            ## run all automated tests
 	$(IN_APP) python3 -m unittest discover -v
+
+shared-inventory: ## several processes share one inventory file and never pay the same notes
+	./scripts/shared-inventory-test.sh
 
 coverage:        ## tests with coverage report
 	$(IN_APP) coverage run -m unittest discover && coverage report

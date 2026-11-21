@@ -4,6 +4,7 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -104,6 +105,19 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(out.count("Withdrawal"), 2)  # 2700 and 600; the 2700 after 'q' is ignored
         self.assertIn("must be a number", err)
 
+    def test_interactive_inventory_command_shows_current_notes(self):
+        code, out, _ = run([], stdin_text="2700\ni\nq\n")
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total cash ₹5300)", out)
+        self.assertEqual(out.count("Withdrawal"), 1)  # 'i' does not withdraw anything
+
+    def test_interactive_inventory_command_is_case_insensitive_and_has_a_long_form(self):
+        code, out, err = run([], stdin_text="I\ninventory\nINVENTORY\n")
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(out.count("(total cash ₹8000)"), 3)
+        self.assertNotIn("Withdrawal", out)
+        self.assertEqual(err, "")
+
     def test_ctrl_c_ends_interactive_mode_quietly(self):
         class TypesThenPressesCtrlC:
             def __iter__(self):
@@ -120,6 +134,30 @@ class CommandLineTests(unittest.TestCase):
         code, out, _ = run([], stdin_text="2700\n")
         self.assertEqual(code, EXIT_OK)
         self.assertIn("Total notes dispensed: 6", out)
+
+
+class StateFileTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = str(Path(folder.name) / "atm.json")
+
+    def test_the_inventory_carries_over_to_the_next_run(self):
+        self.assertEqual(run(["--state-file", self.path, "2700"])[0], EXIT_OK)
+        code, out, _ = run(["--state-file", self.path, "2700"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20", out)
+
+    def test_a_corrupt_state_file_is_invalid_input(self):
+        Path(self.path).write_text("{bad", encoding="utf-8")
+        code, _, err = run(["--state-file", self.path, "100"])
+        self.assertEqual(code, EXIT_INVALID_INPUT)
+        self.assertIn("Cannot read the state file", err)
+
+    def test_a_state_file_in_a_missing_folder_is_invalid_input(self):
+        code, _, err = run(["--state-file", str(Path(self.path).parent / "missing" / "atm.json"), "100"])
+        self.assertEqual(code, EXIT_INVALID_INPUT)
+        self.assertIn("Cannot use the state file", err)
 
 
 class RunAsModuleTests(unittest.TestCase):

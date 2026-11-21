@@ -18,6 +18,8 @@ Configuration (environment variables)
     ATM_HOST             address to listen on (default 127.0.0.1; containers set 0.0.0.0)
     ATM_PORT             port (default 8080)
     ATM_MAX_WITHDRAWAL   largest amount per withdrawal (default 200000)
+    ATM_STATE_FILE       keep the inventory in this JSON file (default: in memory only). It
+                         survives restarts and can be shared by several containers.
     ATM_VERSION          build version reported by /health (set by the image build; default "dev")
     ATM_API_KEY          if set (16+ characters), /inventory and /withdrawals need the header
                          "Authorization: Bearer <key>". The health check stays open.
@@ -48,6 +50,7 @@ from dispenser import (
     DEFAULT_MAX_WITHDRAWAL,
     ATMError,
     CashDispenser,
+    InventoryStore,
     Notes,
     Validator,
 )
@@ -104,10 +107,16 @@ class ServiceConfig:
             raise ConfigError(f"ATM_API_KEY must be at least {MIN_API_KEY_LENGTH} characters long")
 
         try:
-            inventory = Validator.parse_inventory(environ.get("ATM_INVENTORY", DEFAULT_INVENTORY))
-            atm = CashDispenser(inventory, max_withdrawal=max_withdrawal)
+            inventory = Validator.inventory(Validator.parse_inventory(environ.get("ATM_INVENTORY", DEFAULT_INVENTORY)))
         except ATMError as error:
             raise ConfigError(f"ATM_INVENTORY is invalid: {error}") from None
+
+        state_file = environ.get("ATM_STATE_FILE") or None
+        try:
+            store = InventoryStore(state_file) if state_file else None
+            atm = CashDispenser(inventory, max_withdrawal=max_withdrawal, store=store)
+        except (ATMError, OSError) as error:
+            raise ConfigError(f"ATM_STATE_FILE cannot be used: {error}") from None
 
         return cls(atm=atm, host=environ.get("ATM_HOST", "127.0.0.1"), port=int(port_text),
                    api_key=api_key, version=version)

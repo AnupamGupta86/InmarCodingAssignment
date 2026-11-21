@@ -1,17 +1,21 @@
-"""Integration tests for the HTTP service: a real server on a free port, real HTTP requests.
+"""Tests for service.py: a real server on a free port, real HTTP requests.
 
 Covers the functional API, every error path, security behaviour (limits, headers, API key,
-no stack traces) and concurrent withdrawals over HTTP.
+no stack traces), concurrent withdrawals over HTTP, fuzzing, and the end-to-end smoke-test script.
 """
 
+import contextlib
 import http.client
+import io
 import json
 import logging
 import os
+import random
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -31,6 +35,10 @@ from service import (
     JsonLogFormatter,
     ServiceConfig,
 )
+from tests.test_dispenser import SEED, random_value
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "e2e"))
+import smoke_test  # noqa: E402
 
 API_KEY = "test-key-0123456789abcdef"
 
@@ -398,6 +406,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.atm.inventory, {4: 1, 3: 2})
         self.assertEqual((config.host, config.port, config.api_key), ("0.0.0.0", 9000, API_KEY))
 
+    def test_state_file_keeps_the_inventory_between_starts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            environ = {"ATM_STATE_FILE": str(Path(folder) / "atm.json")}
+            ServiceConfig.from_environment(environ).atm.dispense(2700)
+            self.assertEqual(ServiceConfig.from_environment(environ).atm.inventory, {500: 3, 200: 9, 100: 20})
+
+    def test_a_bad_state_file_stops_the_service_from_starting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bad = Path(folder) / "atm.json"
+            bad.write_text("not json", encoding="utf-8")
+            for path in (str(bad), str(Path(folder) / "missing" / "atm.json")):
+                with self.subTest(path=path), self.assertRaisesRegex(ConfigError, "ATM_STATE_FILE"):
+                    ServiceConfig.from_environment({"ATM_STATE_FILE": path})
+
     def test_invalid_values_stop_the_service_from_starting(self):
         for env, message in (({"ATM_PORT": "abc"}, "ATM_PORT"), ({"ATM_PORT": "70000"}, "ATM_PORT"),
                              ({"ATM_MAX_WITHDRAWAL": "0"}, "ATM_MAX_WITHDRAWAL"),
@@ -456,6 +478,73 @@ class ConfigTests(unittest.TestCase):
         with self.assertLogs("atm.service", level="ERROR"):
             self.assertEqual(ATMService({"ATM_PORT": "abc"}).run(), 2)
         logging.getLogger().handlers.clear()
+
+
+# ================================================================================================
+# Fuzz: the service never answers 500, whatever bytes it receives
+# ================================================================================================
+
+class HttpFuzzTests(unittest.TestCase):
+    def test_service_never_returns_500(self):
+        rng = random.Random(SEED)
+        with RunningServer() as srv:
+            for _ in range(300):
+                kind = rng.randrange(3)
+                if kind == 0:
+                    raw = json.dumps({"amount": random_value(rng)}, default=str).encode()
+                elif kind == 1:
+                    raw = bytes(rng.randrange(256) for _ in range(rng.randint(0, 60)))
+                else:
+                    raw = json.dumps({random_value(rng).__repr__(): random_value(rng)}, default=str).encode()
+                status, body, _ = srv.request("POST", "/withdrawals", raw_body=raw,
+                                              headers={"Content-Type": "application/json"})
+                self.assertIn(status, (200, 400, 422), (raw, body))
+                self.assertIn("error" if status != 200 else "dispensed", body)
+
+
+# ================================================================================================
+# The end-to-end smoke-test script, run against a real server, so it can be trusted
+# ================================================================================================
+
+def run_smoke_test(url, api_key):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = smoke_test.main(url, api_key=api_key)
+    return code, output.getvalue()
+
+
+class SmokeScriptTests(unittest.TestCase):
+    def test_passes_against_a_healthy_service(self):
+        with RunningServer() as srv:
+            code, output = run_smoke_test(f"http://127.0.0.1:{srv.port}", api_key="")
+        self.assertEqual(code, 0, output)
+        self.assertIn("All checks passed", output)
+
+    def test_passes_with_the_right_api_key(self):
+        with RunningServer(api_key=API_KEY) as srv:
+            code, output = run_smoke_test(f"http://127.0.0.1:{srv.port}", api_key=API_KEY)
+        self.assertEqual(code, 0, output)
+        self.assertIn("request without API key returns 401", output)
+
+    def test_fails_clearly_without_the_api_key(self):
+        with RunningServer(api_key=API_KEY) as srv:
+            code, output = run_smoke_test(f"http://127.0.0.1:{srv.port}", api_key="")
+        self.assertEqual(code, 1)
+        self.assertIn("set ATM_API_KEY", output)
+
+    def test_checks_the_expected_version(self):
+        with RunningServer() as srv:  # the test server reports version "dev"
+            with mock.patch.dict(os.environ, {"EXPECTED_VERSION": "dev"}):
+                self.assertEqual(run_smoke_test(f"http://127.0.0.1:{srv.port}", api_key="")[0], 0)
+            with mock.patch.dict(os.environ, {"EXPECTED_VERSION": "1.0.20261120183012"}):
+                code, output = run_smoke_test(f"http://127.0.0.1:{srv.port}", api_key="")
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  service reports version 1.0.20261120183012", output)
+
+    def test_works_on_an_empty_atm(self):
+        with RunningServer({500: 0}) as srv:
+            code, output = run_smoke_test(f"http://127.0.0.1:{srv.port}", api_key="")
+        self.assertEqual(code, 0, output)
 
 
 if __name__ == "__main__":

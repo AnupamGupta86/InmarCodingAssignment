@@ -52,6 +52,8 @@ stages:
           - script: python3 -m unittest discover -v
             workingDirectory: atm-dispenser
             displayName: Unit, integration, concurrency and fuzz tests
+          - script: ./scripts/shared-inventory-test.sh
+            displayName: Several processes sharing one inventory file never pay the same notes
       - job: Coverage
         pool: {vmImage: ubuntu-latest}
         steps:

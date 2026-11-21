@@ -62,7 +62,14 @@ else
   fail "pip, setuptools or ensurepip is still in the image"
 fi
 
-# 6. The code in the image works
+# 6. The folder for the optional state file is writable by the app user
+if docker run --rm --entrypoint python3 "${IMAGE}" -c "open('/data/probe', 'w').close()"; then
+  pass "/data is writable by user 10001 (for ATM_STATE_FILE)"
+else
+  fail "/data is not writable by user 10001"
+fi
+
+# 7. The code in the image works
 if docker run --rm "${IMAGE}" python3 cli.py 2700 | grep -q "Total notes dispensed: 6"; then
   pass "CLI in the image dispenses the example from the brief"
 else

@@ -4,15 +4,27 @@
     NoteAllocator   which notes pay an amount with the fewest notes? (pure calculation)
     CashDispenser   the ATM: owns the notes, updates them only after a complete allocation,
                     and never lets two withdrawals take the same notes.
+    InventoryStore  optional JSON state file: the inventory survives restarts and can be
+                    shared by several processes, which then behave as one ATM.
 
 The command line (cli.py) and the HTTP service (service.py) are thin front ends over CashDispenser.
 """
 
+import contextlib
+import json
+import os
 import re
+import tempfile
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from functools import reduce
 from math import gcd
+from pathlib import Path
+
+try:
+    import fcntl  # file locks shared between processes (macOS and Linux)
+except ImportError:  # pragma: no cover - Windows runs the Docker image instead
+    fcntl = None  # type: ignore[assignment]
 
 CANNOT_DISPENSE = "Cannot dispense requested amount"
 DEFAULT_INVENTORY = "500:8, 200:10, 100:20"   # the example from the brief
@@ -155,6 +167,70 @@ class Validator:
         return int(text)
 
 
+# Persistence --------------------------------------------------------------------------------
+
+class InventoryStore:
+    """Keeps the inventory in a JSON file, so it survives restarts and can be shared.
+
+    The file looks like {"inventory": {"500": 8, "200": 10, "100": 20}}.
+
+    Several programs or containers may use the same file at the same time. Each withdrawal
+    holds an exclusive lock on "<file>.lock" while it reads the notes, allocates and saves the
+    result, so two processes can never pay out the same notes. The file is replaced atomically
+    (write a temporary file, then rename it), so a crash never leaves it half-written.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]):
+        if fcntl is None:  # pragma: no cover - Windows
+            raise InvalidInventoryError("A state file needs macOS or Linux; on Windows use the Docker image")
+        self.path = Path(path)
+        self._lock_path = self.path.with_name(self.path.name + ".lock")
+
+    @contextlib.contextmanager
+    def locked(self) -> Iterator[None]:
+        """Hold the lock that every process using this file must take before changing it."""
+        with open(self._lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)  # waits while another process holds it
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    def exists(self) -> bool:
+        return self.path.exists()
+
+    def load(self) -> Notes:
+        """Read and validate the saved inventory. Raises InvalidInventoryError if the file is bad."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise InvalidInventoryError(f"Cannot read the state file {self.path}: {error}") from None
+        if not isinstance(data, dict) or not isinstance(data.get("inventory"), dict):
+            raise InvalidInventoryError(f'State file {self.path} must look like {{"inventory": {{"500": 8}}}}')
+
+        notes: dict[int, object] = {}
+        for key, count in data["inventory"].items():
+            if not Validator.WHOLE_NUMBER_TEXT.match(key) or len(key) > Validator.MAX_DIGITS:
+                raise InvalidInventoryError(f"Invalid denomination {key[:20]!r} in the state file {self.path}")
+            notes[int(key)] = count
+        return Validator.inventory(notes)
+
+    def save(self, notes: Notes) -> None:
+        """Write the inventory atomically: readers see either the old file or the new one."""
+        text = json.dumps({"inventory": {str(value): count for value, count in notes.items()}}, indent=2)
+        handle, temporary = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                file.write(text + "\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+
+
 # The minimum-notes algorithm ---------------------------------------------------------------
 
 class NoteAllocator:
@@ -172,7 +248,7 @@ class NoteAllocator:
                           notes take only a few steps per denomination.
       3. Read it back   - follow the table backwards to find which notes were used.
 
-    Time O(S * B), space O(S * B), with S = amount / GCD and B = number of bundles.
+    Time O(S * B), space O(S * B), with S = amount / GCD (greatest common divisor) and B = number of bundles.
     """
 
     _IMPOSSIBLE = float("inf")
@@ -269,19 +345,30 @@ class CashDispenser:
     Concurrency: several customers may withdraw at the same time. Without protection, two
     withdrawals could both read "5 notes of 500 left" and together dispense notes that do not
     exist. A lock makes "read inventory -> allocate -> update inventory" one indivisible step.
+
+    With an InventoryStore, the file lock extends that guarantee to every process sharing the
+    file: the notes are re-read from the file inside the lock before each withdrawal.
     """
 
     def __init__(self, inventory: Mapping[int, int], max_withdrawal: int | str | None = None,
-                 allocator: NoteAllocator | None = None):
+                 allocator: NoteAllocator | None = None, store: InventoryStore | None = None):
         """Create the ATM from {denomination: note count}. Raises InvalidInventoryError.
 
         `max_withdrawal` is an optional limit per withdrawal, like a real ATM's; it also caps how
-        much work one request can cause. `allocator` can be replaced in tests.
+        much work one request can cause. `allocator` can be replaced in tests. With a `store`,
+        an existing state file wins over `inventory`; otherwise the file is created from it.
         """
         self._notes: Notes = Validator.inventory(inventory)
         self.max_withdrawal = None if max_withdrawal is None else Validator.amount(max_withdrawal)
         self._allocator = allocator or NoteAllocator()
         self._lock = threading.Lock()
+        self._store = store
+        if store is not None:
+            with store.locked():
+                if store.exists():
+                    self._notes = store.load()
+                else:
+                    store.save(self._notes)
 
     def dispense(self, amount) -> Notes | None:
         """Withdraw `amount` and return {denomination: notes dispensed}.
@@ -301,27 +388,38 @@ class CashDispenser:
         if self.max_withdrawal is not None and amount > self.max_withdrawal:
             raise InvalidAmountError(f"Amount {amount} exceeds the limit of {self.max_withdrawal} per withdrawal")
 
-        with self._lock:
+        with self._lock, self._shared_lock():
+            self._reload()  # another process sharing the state file may have withdrawn
             notes_to_dispense = self._allocator.find_minimum_notes(amount, self._notes)
             if notes_to_dispense is None:
                 return None, dict(self._notes)
 
             # The full amount has been allocated: only now is the inventory updated. The new
-            # inventory is built completely and then swapped in, so it is never half-updated.
+            # inventory is built completely, saved (if there is a state file), then swapped in,
+            # so it is never half-updated and a failed save changes nothing.
             updated = dict(self._notes)
             for denomination, count in notes_to_dispense.items():
                 updated[denomination] -= count
+            if self._store is not None:
+                self._store.save(updated)
             self._notes = updated
             return dict(notes_to_dispense), dict(updated)
 
     @property
     def inventory(self) -> Notes:
         """A copy of the notes currently in the machine, largest denomination first."""
-        with self._lock:
+        with self._lock, self._shared_lock():
+            self._reload()
             return dict(self._notes)
 
     @property
     def total_cash(self) -> int:
         """The total value of all notes currently in the machine."""
-        with self._lock:
-            return sum(denomination * count for denomination, count in self._notes.items())
+        return sum(denomination * count for denomination, count in self.inventory.items())
+
+    def _shared_lock(self) -> contextlib.AbstractContextManager[None]:
+        return self._store.locked() if self._store is not None else contextlib.nullcontext()
+
+    def _reload(self) -> None:
+        if self._store is not None:
+            self._notes = self._store.load()

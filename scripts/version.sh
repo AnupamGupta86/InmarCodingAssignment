@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Print the build version: <major>.<minor>.<UTC date and time>, for example 1.0.20261120183012.
+# Print the build version: <major>.<minor>.<IST date and time>, for example 1.0.20261120183012.
+# IST is India Standard Time (UTC+05:30).
 # Major and minor come from atm-dispenser/pyproject.toml, so there is one place to change them.
 
 set -euo pipefail
@@ -13,4 +14,9 @@ if [[ -z "${major_minor}" ]]; then
   exit 1
 fi
 
-echo "${major_minor}.$(date -u +%Y%m%d%H%M%S)"
+if [[ "$(TZ=Asia/Kolkata date +%z)" != "+0530" ]]; then
+  echo "The time zone Asia/Kolkata is not available on this machine" >&2   # date would silently use UTC
+  exit 1
+fi
+
+echo "${major_minor}.$(TZ=Asia/Kolkata date +%Y%m%d%H%M%S)"
