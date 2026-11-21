@@ -317,12 +317,21 @@ class SecurityTests(unittest.TestCase):
         with RunningServer() as srv:
             self.assertEqual(srv.request("GET", "/health")[2]["server"], "atm-service")
 
-    def test_request_id_is_echoed_only_when_safe(self):
+    def test_request_id_is_passed_on_only_when_it_is_a_uuid(self):
         with RunningServer() as srv:
-            headers = srv.request("GET", "/health", headers={"X-Request-ID": "abc-123"})[2]
-            self.assertEqual(headers["x-request-id"], "abc-123")
-            headers = srv.request("GET", "/health", headers={"X-Request-ID": "bad id<script>"})[2]
-            self.assertRegex(headers["x-request-id"], r"^[0-9a-f]{32}$")
+            client_id = "0b5e4f1e-6d2a-4c8e-9a51-3f7d2c1b8e90"
+            headers = srv.request("GET", "/health", headers={"X-Request-ID": client_id})[2]
+            self.assertEqual(headers["x-request-id"], client_id.replace("-", ""))
+            for unsafe in ("abc-123", "bad id<script>", "1" * 32 + "\tX-Evil: 1"):
+                with self.subTest(unsafe=unsafe):
+                    headers = srv.request("GET", "/health", headers={"X-Request-ID": unsafe})[2]
+                    self.assertRegex(headers["x-request-id"], r"^[0-9a-f]{32}$")
+                    self.assertNotIn("x-evil", headers)
+
+    def test_client_text_is_logged_without_line_breaks(self):
+        fake_entry = 'GET\r\n{"level": "INFO", "message": "fake log entry"}'
+        self.assertEqual(service._without_line_breaks(fake_entry), 'GET{"level": "INFO", "message": "fake log entry"}')
+        self.assertEqual(len(service._without_line_breaks("x" * 5000)), 200)
 
     def test_unexpected_errors_do_not_leak_details(self):
         with RunningServer() as srv:

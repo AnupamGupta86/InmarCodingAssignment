@@ -36,7 +36,7 @@ Key features:
 - **Thread-safe:** a lock makes "allocate notes → update inventory" one indivisible step.
 - **Two ways to use it:** a **command-line program** and a **hardened HTTP/JSON service** (in Docker).
 - **Small and object-oriented:** three source files, standard library only, Python 3.14.8.
-- **Tested and shipped like production code:** 211 automated tests, a versioned and validated
+- **Tested and shipped like production code:** 212 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
 
 ### 1.2 Assumptions
@@ -405,7 +405,7 @@ the tests pass, and nothing is run until the image is validated.
 
 ```mermaid
 flowchart LR
-    tests["1. Tests<br/>211 automated tests"] -->|pass| version["2. Version<br/>major.minor.datetime (IST)"]
+    tests["1. Tests<br/>212 automated tests"] -->|pass| version["2. Version<br/>major.minor.datetime (IST)"]
     version --> build["3. Build image<br/>atm-dispenser:version"]
     build --> validate["4. Validate image<br/>validate-image.sh"]
     validate -->|pass| run["5. Start hardened container<br/>read-only, non-root, limits"]
@@ -433,7 +433,7 @@ InmarCodingAssignment/
 │   │   ├── dispenser.py             ATM core: Validator, NoteAllocator, CashDispenser, InventoryStore, errors
 │   │   ├── cli.py                   command line: CommandLine
 │   │   └── service.py               HTTP/JSON service: ATMService, ATMServer, ATMRequestHandler
-│   ├── tests/                       211 unittest tests, one file per source file
+│   ├── tests/                       212 unittest tests, one file per source file
 │   │   ├── test_dispenser.py        Validator, NoteAllocator, CashDispenser, state file, concurrency, property tests
 │   │   ├── test_cli.py              CommandLine
 │   │   ├── test_service.py          HTTP service, security, HTTP fuzzing, the smoke-test script
@@ -468,7 +468,7 @@ InmarCodingAssignment/
 | R9 | Standard library only | No third-party packages at runtime (`dependencies = []`): `argparse`, `threading`, `fcntl`, `http.server`, `json`, `math`, `tempfile`, `unittest` and other built-in modules |
 | R10 | Validation messages | [Section 6.1](#61-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
 | R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `test_service.ConcurrentHttpTests`, `scripts/shared-inventory-test.sh` |
-| R12 | Positive and negative test cases | 211 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
+| R12 | Positive and negative test cases | 212 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
 | R13 | README: design, how to run and test, complexity | Sections [2](#2-solution-architecture--workflow) (design and [complexity](#233-time-and-space-complexity)), [5](#5-installation-configuration--usage) (how to run) and [6.2](#62-testing-strategy) (tests) |
 | R14 | Readable, maintainable code | Three small object-oriented modules with type hints; ruff and mypy checked in CI |
 
@@ -497,7 +497,7 @@ git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd Inmar
 *Approach 1: command line* (needs Python 3.14.8; details in [5.2](#52-get-the-code-and-run-the-tests) and [5.3](#53-validate-the-use-cases-with-the-command-line)):
 
 ```bash
-python3 -m unittest discover -s atm-dispenser        # 211 tests
+python3 -m unittest discover -s atm-dispenser        # 212 tests
 python3 atm-dispenser/src/cli.py 2700                # example from the brief
 ```
 
@@ -525,7 +525,7 @@ curl -s -H "Authorization: Bearer $ATM_API_KEY" -H "Content-Type: application/js
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
 cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 211 tests ... OK
+python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 212 tests ... OK
 ```
 
 Nothing to install and no `PYTHONPATH` to set: the scripts find their own modules, and the tests
@@ -562,7 +562,7 @@ export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32
 
 | Step | What it does | Pass condition |
 |---|---|---|
-| 1 | Runs the 211 unit, integration and security tests | `OK` (otherwise nothing is built) |
+| 1 | Runs the 212 unit, integration and security tests | `OK` (otherwise nothing is built) |
 | 2 | Builds `atm-dispenser:<version>`, e.g. `atm-dispenser:1.0.20261120183012` | build succeeds |
 | 3 | Validates the image (`scripts/validate-image.sh`) | version label and `ATM_VERSION` match; user 10001; health check defined; port 8080 exposed; `/app` holds only the application modules; no pip or setuptools; size ≤ 250 MB; `/data` writable for the state file; the CLI inside dispenses the brief's example |
 | 4 | Starts container `atm-dispenser` on `127.0.0.1:8080`: read-only filesystem, all capabilities dropped, `no-new-privileges`, 128 MB memory, 0.5 CPU, 100 processes | container running |
@@ -737,7 +737,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 ### 6.2 Testing Strategy
 
 ```bash
-python3 -m unittest discover -s atm-dispenser -v                       # all 211 tests, about 6 seconds
+python3 -m unittest discover -s atm-dispenser -v                       # all 212 tests, about 6 seconds
 python3 -m unittest discover -s atm-dispenser -p test_service.py       # one test file (test_dispenser / test_cli / test_service)
 python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against a running service
 ```
@@ -777,7 +777,7 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 | HTTP headers | `nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `no-referrer`, `no-store`; server software version hidden |
 | Availability | Socket timeout against slow clients; connection backlog sized for bursts; at most 64 connections at once (more get `503` + `Retry-After`); calculation capped at 64 million steps and 50 denominations, so no request can exhaust memory or CPU; CPU, memory and process limits on the container |
 | State file | Optional; written atomically (temporary file + rename, fsync); validated like any input when read; lives on a volume, so the container filesystem stays read-only |
-| Logging | Structured JSON logs; request bodies never logged; client request ids sanitised against log injection |
+| Logging | Structured JSON logs; request bodies never logged; line breaks removed from client text (method, path) so it cannot fake log entries; a client `X-Request-ID` is passed on only if it is a UUID, rebuilt from the parsed value (no response splitting) |
 | Container | Slim base with OS packages patched at build time, no pip or setuptools (nothing to install at runtime), application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
 | Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
 

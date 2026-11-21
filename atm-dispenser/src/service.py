@@ -72,10 +72,26 @@ SECURITY_HEADERS = {
     "Cache-Control": "no-store",
 }
 
-_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9.+-]{1,64}$")
 
 log = logging.getLogger("atm.service")
+
+
+def _without_line_breaks(text: str, limit: int = 200) -> str:
+    """Client-supplied text for a log line or header: without line breaks it cannot fake extra
+    log entries or extra headers (log injection, response splitting)."""
+    return text.replace("\r", "").replace("\n", "")[:limit]
+
+
+def _request_id_from(client_value: str) -> str:
+    """The client's X-Request-ID if it is a UUID (to trace a request across systems), else a new one.
+
+    The ID is rebuilt from the parsed 128-bit number, so nothing the client typed is passed on.
+    """
+    try:
+        return uuid.UUID(client_value).hex
+    except ValueError:
+        return uuid.uuid4().hex
 
 
 def _as_json_notes(notes: Notes) -> dict[str, int]:
@@ -176,8 +192,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         """Route one request: unknown route -> 404/405, then the API key check, then the endpoint."""
         self._started = time.perf_counter()
         self._body_read = False  # the same handler serves every request on a keep-alive connection
-        incoming_id = self.headers.get("X-Request-ID", "")
-        self._request_id = incoming_id if _SAFE_REQUEST_ID.match(incoming_id) else uuid.uuid4().hex
+        self._request_id = _request_id_from(self.headers.get("X-Request-ID", ""))
         path = urlsplit(self.path).path.rstrip("/") or "/"
 
         try:
@@ -187,7 +202,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             elif path not in self.PROTECTED or self._authorised():
                 getattr(self, handler_name)()
         except Exception:  # never show a stack trace to the client
-            log.exception("unexpected error", extra={"request_id": self._request_id})
+            log.exception("unexpected error", extra={"request_id": _without_line_breaks(self._request_id)})
             self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"}, close=True)
 
     # Endpoints ------------------------------------------------------------------------------
@@ -222,7 +237,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
         except OSError:  # the state file could not be saved: the withdrawal did not happen
-            log.exception("cannot save the state file", extra={"request_id": self._request_id})
+            log.exception("cannot save the state file", extra={"request_id": _without_line_breaks(self._request_id)})
             self._send(HTTPStatus.SERVICE_UNAVAILABLE,
                        {"error": "Inventory could not be saved; nothing was dispensed"})
             return
@@ -333,7 +348,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("X-Request-ID", getattr(self, "_request_id", "-"))
+        self.send_header("X-Request-ID", _without_line_breaks(getattr(self, "_request_id", "-")))
         for name, value in {**SECURITY_HEADERS, **(extra_headers or {})}.items():
             self.send_header(name, value)
         if close or self._has_unread_body():
@@ -360,9 +375,9 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
     def _log_request(self, status: int) -> None:
         started = getattr(self, "_started", None)
         log.info("request", extra={
-            "request_id": getattr(self, "_request_id", "-"),
-            "method": getattr(self, "command", None),
-            "path": urlsplit(getattr(self, "path", "") or "").path[:200],
+            "request_id": _without_line_breaks(getattr(self, "_request_id", "-")),
+            "method": _without_line_breaks(getattr(self, "command", None) or ""),
+            "path": _without_line_breaks(urlsplit(getattr(self, "path", "") or "").path),
             "status": status,
             "duration_ms": round((time.perf_counter() - started) * 1000, 2) if started else None,
             "client": self.client_address[0] if self.client_address else None,
