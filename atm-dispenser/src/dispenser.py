@@ -134,15 +134,10 @@ class Validator:
 
     @classmethod
     def parse_inventory(cls, text: str) -> Notes:
-        """Turn "500:8, 200:10" or "{ 500: 8, 200: 10 }" into {500: 8, 200: 10}.
-
-        Only the format is checked here; inventory() checks that the values make sense.
-        """
+        """Turn "500:8, 200:10" or "{ 500: 8, 200: 10 }" into a validated {500: 8, 200: 10}."""
         body = text.strip()
         if body.startswith("{") and body.endswith("}"):
             body = body[1:-1]
-        if not body.strip():
-            raise InvalidInventoryError("ATM inventory is empty: add at least one denomination")
 
         inventory: Notes = {}
         for entry in body.split(","):
@@ -153,12 +148,12 @@ class Validator:
                 raise InvalidInventoryError(
                     f"Invalid inventory entry {entry.strip()!r}: use denomination:count, e.g. 500:8"
                 )
-            denomination = cls._parse_whole_number(parts[0], "denomination")
-            count = cls._parse_whole_number(parts[1], f"note count for denomination {denomination}")
+            denomination = cls.whole_number(parts[0], "denomination")
+            count = cls.whole_number(parts[1], f"note count for denomination {denomination}")
             if denomination in inventory:
                 raise InvalidInventoryError(f"Denomination {denomination} is listed more than once")
             inventory[denomination] = count
-        return inventory
+        return cls.inventory(inventory)
 
     @staticmethod
     def preview(value, limit: int = 30) -> str:
@@ -193,7 +188,8 @@ class Validator:
             return False
 
     @classmethod
-    def _parse_whole_number(cls, text: str, what: str) -> int:
+    def whole_number(cls, text: str, what: str) -> int:
+        """Parse a denomination or note count written as text. Raises InvalidInventoryError."""
         text = text.strip()
         if not cls.WHOLE_NUMBER_TEXT.match(text):
             raise InvalidInventoryError(f"Invalid {what} {text[:20]!r}: must be a whole number")
@@ -356,8 +352,13 @@ class InventoryStore:
             finally:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 
-    def exists(self) -> bool:
-        return self.path.exists()
+    def load_or_create(self, starting_inventory: Notes) -> Notes:
+        """The saved inventory if the file exists (it wins), otherwise create the file from the start."""
+        with self.locked():
+            if self.path.exists():
+                return self.load()
+            self.save(starting_inventory)
+            return starting_inventory
 
     def load(self) -> Notes:
         """Read and validate the saved inventory. Raises InvalidInventoryError if the file is bad."""
@@ -373,11 +374,10 @@ class InventoryStore:
 
         notes: dict[int, object] = {}
         for key, count in data["inventory"].items():
-            if not Validator.WHOLE_NUMBER_TEXT.match(key) or len(key) > Validator.MAX_DIGITS:
-                raise InvalidInventoryError(
-                    f"Invalid denomination {key[:20]!r} in the state file {self.path}"
-                )
-            denomination = int(key)
+            try:
+                denomination = Validator.whole_number(key, "denomination")
+            except InvalidInventoryError as error:
+                raise InvalidInventoryError(f"{error} (in the state file {self.path})") from None
             if denomination in notes:  # "500" and "0500" are the same denomination
                 raise InvalidInventoryError(
                     f"Denomination {denomination} is listed more than once in the state file {self.path}"
@@ -430,11 +430,7 @@ class CashDispenser:
         self._lock = threading.Lock()
         self._store = store
         if store is not None:
-            with store.locked():
-                if store.exists():
-                    self._notes = store.load()
-                else:
-                    store.save(self._notes)
+            self._notes = store.load_or_create(self._notes)
 
     def dispense(self, amount) -> Notes | None:
         """Withdraw `amount` and return {denomination: notes dispensed}.

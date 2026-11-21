@@ -207,8 +207,10 @@ class ParseInventoryTests(unittest.TestCase):
     def test_trailing_comma_is_tolerated(self):
         self.assertEqual(Validator.parse_inventory("500:8,"), {500: 8})
 
-    def test_negative_values_are_parsed_and_left_for_the_atm_to_reject(self):
-        self.assertEqual(Validator.parse_inventory("500:-1"), {500: -1})
+    def test_values_are_validated_as_well_as_parsed(self):
+        for text, message in (("500:-1", "cannot be negative"), ("0:5", "Invalid denomination")):
+            with self.subTest(text=text), self.assertRaisesRegex(InvalidInventoryError, message):
+                Validator.parse_inventory(text)
 
     def test_rejects_empty_text(self):
         for text in ("", "   ", "{}", "{ }"):

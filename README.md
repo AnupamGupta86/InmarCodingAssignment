@@ -151,6 +151,7 @@ classDiagram
         +amount(value)$ int
         +inventory(mapping)$ Notes
         +parse_inventory(text)$ Notes
+        +whole_number(text, what)$ int
     }
 
     class NoteAllocator {
@@ -177,7 +178,7 @@ classDiagram
     class InventoryStore {
         +path : Path
         +locked() context
-        +exists() bool
+        +load_or_create(starting) Notes
         +load() Notes
         +save(notes)
     }
@@ -715,7 +716,7 @@ one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service 
 | More than 50 denominations | `Too many denominations: N (at most 50)` |
 | An amount that would need more than 64 million calculation steps (only possible after raising the withdrawal limit, e.g. ₹10¹² in ₹1 notes) | `Amount … is too large to work out with this inventory; lower the amount or the withdrawal limit` |
 | `{"amount": 100, "amount": 2700}` (service) | `Duplicate field(s): amount` (`400`; neither value is used) |
-| State file that is not valid JSON, has the wrong shape, bad values or the same denomination twice (`"500"` and `"0500"`) | `Cannot read the state file …` / `Invalid denomination … in the state file` (CLI exit code 2; the service does not start) |
+| State file that is not valid JSON, has the wrong shape, bad values or the same denomination twice (`"500"` and `"0500"`) | `Cannot read the state file …` / `Invalid denomination … (in the state file …)` (CLI exit code 2; the service does not start) |
 | State file in a folder that does not exist or is not writable | `Cannot use the state file …` (CLI exit code 2; the service does not start) |
 | State file can no longer be saved while running (e.g. the folder became read-only) | `Cannot save the state file …; nothing was dispensed` (CLI exit code 2, service `503`); the inventory is unchanged |
 | Amount that cannot be made exactly (e.g. 250) | `Cannot dispense requested amount` (CLI exit code 1, service `422`) |
@@ -774,7 +775,7 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 | HTTP protocol | Conflicting `Content-Length` headers and duplicate JSON fields are rejected (no request smuggling or ambiguous amounts); a body the server does not read closes the connection, so it can never be read as a hidden second request; slow bodies get 408, cut-off bodies 400 |
 | Authentication | Optional bearer API key (`ATM_API_KEY`, ≥ 16 chars), compared in constant time; passed to the container from the environment, never stored in Git or written on a command line |
 | Errors | No stack traces or internal details in responses; JSON errors for malformed HTTP too |
-| HTTP headers | `nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `no-referrer`, `no-store`; server software version hidden |
+| HTTP headers | `nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `no-referrer`, `no-store`, `Cross-Origin-Resource-Policy: same-origin`; server software version hidden |
 | Availability | Socket timeout against slow clients; connection backlog sized for bursts; at most 64 connections at once (more get `503` + `Retry-After`); calculation capped at 64 million steps and 50 denominations, so no request can exhaust memory or CPU; CPU, memory and process limits on the container |
 | State file | Optional; written atomically (temporary file + rename, fsync); validated like any input when read; lives on a volume, so the container filesystem stays read-only |
 | Logging | Structured JSON logs; request bodies never logged; line breaks removed from client text (method, path) so it cannot fake log entries; a client `X-Request-ID` is passed on only if it is a UUID, rebuilt from the parsed value (no response splitting) |

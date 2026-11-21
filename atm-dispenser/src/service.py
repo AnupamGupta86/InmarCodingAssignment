@@ -70,6 +70,7 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
+    "Cross-Origin-Resource-Policy": "same-origin",   # other websites cannot load these responses
 }
 
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9.+-]{1,64}$")
@@ -136,8 +137,7 @@ class ServiceConfig:
             raise ConfigError(f"ATM_API_KEY must be at least {MIN_API_KEY_LENGTH} characters long")
 
         try:
-            inventory_text = environ.get("ATM_INVENTORY", DEFAULT_INVENTORY)
-            inventory = Validator.inventory(Validator.parse_inventory(inventory_text))
+            inventory = Validator.parse_inventory(environ.get("ATM_INVENTORY", DEFAULT_INVENTORY))
         except ATMError as error:
             raise ConfigError(f"ATM_INVENTORY is invalid: {error}") from None
 
