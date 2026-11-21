@@ -2,23 +2,18 @@
 
 [![CI](https://github.com/AnupamGupta86/InmarCodingAssignment/actions/workflows/ci.yml/badge.svg)](https://github.com/AnupamGupta86/InmarCodingAssignment/actions/workflows/ci.yml)
 
-1. [Introduction](#1-introduction)
-2. [Assumptions](#2-assumptions)
-3. [Architecture: high-level and low-level design](#3-architecture-high-level-and-low-level-design)
-4. [Workflow](#4-workflow)
-5. [Folder structure](#5-folder-structure)
-6. [Setup and validation steps](#6-setup-and-validation-steps)
-7. [Usage reference](#7-usage-reference)
-8. [Validation rules and messages](#8-validation-rules-and-messages)
-9. [Testing strategy](#9-testing-strategy)
-10. [CI/CD and DevSecOps](#10-cicd-and-devsecops)
-11. [Security](#11-security)
-12. [Requirements checklist](#12-requirements-checklist)
-13. [Troubleshooting](#13-troubleshooting)
+1. [Overview & Assumptions](#1-overview--assumptions)
+2. [Solution Architecture & Workflow](#2-solution-architecture--workflow)
+3. [Project Structure](#3-project-structure)
+4. [Requirements Coverage](#4-requirements-coverage)
+5. [Installation, Configuration & Usage](#5-installation-configuration--usage)
+6. [Validation & Testing Strategy](#6-validation--testing-strategy)
+7. [Security & DevSecOps](#7-security--devsecops)
+8. [Troubleshooting & FAQ](#8-troubleshooting--faq)
 
----
+## 1. Overview & Assumptions
 
-## 1. Introduction
+### 1.1 Introduction
 
 **ATM Cash Dispenser** decides which notes an ATM should pay out for a withdrawal. It always uses
 the **fewest possible notes**, only uses notes the machine actually holds, and updates its
@@ -44,9 +39,7 @@ Key features:
 - **Tested and shipped like production code:** 199 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
 
----
-
-## 2. Assumptions
+### 1.2 Assumptions
 
 - Amounts and denominations are whole numbers of the same currency unit (rupees).
 - The output lists only denominations actually dispensed; the updated inventory lists all of them,
@@ -72,9 +65,9 @@ Key features:
 
 ---
 
-## 3. Architecture: high-level and low-level design
+## 2. Solution Architecture & Workflow
 
-### 3.1 High-level design (HLD)
+### 2.1 High-level design (HLD)
 
 **Components and where they run**
 
@@ -134,7 +127,7 @@ flowchart LR
 
 The same pipeline is defined for Azure DevOps in `azure-pipelines.yml`.
 
-### 3.2 Low-level design (LLD)
+### 2.2 Low-level design (LLD)
 
 **Classes** (three source files in `atm-dispenser/src/`)
 
@@ -333,16 +326,16 @@ Alternatives considered:
 
 | Option | Why it was not chosen |
 |---|---|
-| Greedy (biggest note first) | Fast, but wrong for some inventories (section 3.3.1) |
+| Greedy (biggest note first) | Fast, but wrong for some inventories (section 2.3.1) |
 | Try every combination (brute force) | Always correct, but exponential; used only in the tests as an oracle |
 | Integer linear programming solver | Correct and fast, but needs a third-party library (the brief allows the standard library only) |
 | Web framework (Flask, FastAPI) | Adds dependencies to patch and scan; `http.server` with explicit limits is enough for three endpoints |
 | A queue or a single worker thread instead of a lock | Also safe, but more moving parts for the same guarantee |
 | SQLite or another database for the state | Also standard library (SQLite), but a JSON file is readable by eye and the file lock is enough on one machine; a database is the step for several machines |
 
-### 3.3 Algorithm: approach and complexity
+### 2.3 Algorithm: approach and complexity
 
-#### 3.3.1 Why "biggest note first" (greedy) is not enough
+#### 2.3.1 Why "biggest note first" (greedy) is not enough
 
 | Inventory | Amount | Greedy | Correct |
 |---|---|---|---|
@@ -350,7 +343,7 @@ Alternatives considered:
 | `{50: 1, 20: 3}` | 60 | 50, then 10 is impossible → **fails** | `20 × 3` |
 | `{4: 10, 3: 10, 1: 10}` | 6 | 4 + 1 + 1 = 3 notes | `3 × 2` = 2 notes |
 
-#### 3.3.2 Dynamic programming ("bounded coin change")
+#### 2.3.2 Dynamic programming ("bounded coin change")
 
 `NoteAllocator` builds a table that answers, for every amount from 0 to the target, *"what is the
 fewest notes that make exactly this amount?"*. Every combination of the available notes is
@@ -371,7 +364,7 @@ cannot be paid.
 **Ties:** if two combinations use the same number of notes, the one with higher-value notes is
 chosen (6 from `{4:1, 3:2, 2:1}` gives `4 + 2`), so results are always the same.
 
-#### 3.3.3 Time and space complexity
+#### 2.3.3 Time and space complexity
 
 Let **S** = amount ÷ GCD (greatest common divisor) of the denominations, and **B** = number of bundles
 (the sum over denominations of ⌈log₂(usable notes + 1)⌉).
@@ -386,11 +379,7 @@ Measured: ₹199,990 from 7 denominations with up to 2,000 notes each takes abou
 O(D) but can be wrong; the textbook bounded version is O(S × total notes); bundling replaces
 "total notes" with its logarithm.
 
----
-
-## 4. Workflow
-
-### 4.1 A withdrawal
+### 2.4 Workflow: a withdrawal
 
 ```mermaid
 flowchart TD
@@ -406,10 +395,10 @@ flowchart TD
 ```
 
 Invalid input never touches the inventory, a refused withdrawal changes nothing (requirements R5
-and R6 in [section 12](#12-requirements-checklist)), and the inventory is updated only after the
+and R6 in [section 4](#4-requirements-coverage)), and the inventory is updated only after the
 whole amount is allocated (R4). If saving the state file fails, nothing changes.
 
-### 4.2 Build, validate and run
+### 2.5 Workflow: build, validate and run
 
 The same order is used on a laptop (`scripts/run-container.sh`) and in CI. Nothing is built until
 the tests pass, and nothing is run until the image is validated.
@@ -435,7 +424,7 @@ running container is exactly the image that was built.
 
 ---
 
-## 5. Folder structure
+## 3. Project Structure
 
 ```
 InmarCodingAssignment/
@@ -464,16 +453,37 @@ InmarCodingAssignment/
 
 ---
 
-## 6. Setup and validation steps
+## 4. Requirements Coverage
+
+| # | Requirement from the brief | Where |
+|---|---|---|
+| R1 | Amount must be a positive whole number | `Validator.amount` |
+| R2 | Only available notes / never more than available | `NoteAllocator` uses each note at most once; `test_dispenser.NotesLimitTests` |
+| R3 | Minimum number of notes | Dynamic programming; brute-force cross-check in `AgainstBruteForceTests` |
+| R4 | Update inventory only after full allocation | `CashDispenser` builds the new inventory, then swaps it in |
+| R5 | "Cannot dispense requested amount" | `CANNOT_DISPENSE`, printed by the CLI, returned by the service |
+| R6 | Failed withdrawal leaves inventory unchanged | `test_dispenser.FailedWithdrawalTests` |
+| R7 | Do not assume greedy | `{4:1, 3:2}` → `3 × 2`, tested |
+| R8 | Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
+| R9 | Standard library only | No third-party packages at runtime (`dependencies = []`): `argparse`, `threading`, `fcntl`, `http.server`, `json`, `math`, `tempfile`, `unittest` and other built-in modules |
+| R10 | Validation messages | [Section 6.1](#61-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
+| R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `test_service.ConcurrentHttpTests`, `scripts/shared-inventory-test.sh` |
+| R12 | Positive and negative test cases | 199 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
+| R13 | README: design, how to run and test, complexity | Sections [2](#2-solution-architecture--workflow) (design and [complexity](#233-time-and-space-complexity)), [5](#5-installation-configuration--usage) (how to run) and [6.2](#62-testing-strategy) (tests) |
+| R14 | Readable, maintainable code | Three small object-oriented modules with type hints; ruff and mypy checked in CI |
+
+---
+
+## 5. Installation, Configuration & Usage
 
 All commands run from the repository root and use `python3`.
 
 | Platform | How to run |
 |---|---|
 | macOS, Linux | `python3` 3.14.8 for the CLI and tests; Docker for the service |
-| Windows | Docker (sections 6.4 and 7.2), or the macOS/Linux commands inside WSL |
+| Windows | Docker (sections 5.4 and 5.7), or the macOS/Linux commands inside WSL |
 
-**Quick start** (macOS/Linux with Python 3.14.8 and Docker; each step is explained in 6.1–6.4):
+**Quick start** (macOS/Linux with Python 3.14.8 and Docker; each step is explained in 5.1–5.4):
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
@@ -482,15 +492,15 @@ python3 atm-dispenser/src/cli.py 2700                # the brief's example
 ./scripts/run-container.sh                           # test, build, validate and run the service
 ```
 
-### 6.1 Prerequisites
+### 5.1 Prerequisites
 
 | Needed for | Tool | Check |
 |---|---|---|
-| Tests and CLI (6.2, 6.3) | Python 3.14.8 | `python3 --version` |
-| Service in a container (6.4) | Docker | `docker version` |
-| Optional dev checks (6.5) | ruff, mypy, coverage, pip-audit | `python3 -m pip install -r atm-dispenser/requirements-dev.txt` |
+| Tests and CLI (5.2, 5.3) | Python 3.14.8 | `python3 --version` |
+| Service in a container (5.4) | Docker | `docker version` |
+| Optional dev checks (5.5) | ruff, mypy, coverage, pip-audit | `python3 -m pip install -r atm-dispenser/requirements-dev.txt` |
 
-### 6.2 Get the code and run the tests
+### 5.2 Get the code and run the tests
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
@@ -501,7 +511,7 @@ python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 199 tests 
 Nothing to install and no `PYTHONPATH` to set: the scripts find their own modules, and the tests
 add `src/` to the path themselves.
 
-### 6.3 Validate the use cases with the command line
+### 5.3 Validate the use cases with the command line
 
 | # | Use case | Command | Expected result |
 |---|---|---|---|
@@ -521,7 +531,7 @@ add `src/` to the path themselves.
 
 Check an exit code with `echo $?` straight after the command.
 
-### 6.4 Build, validate and run the service in a container
+### 5.4 Build, validate and run the service in a container
 
 One command does every step:
 
@@ -574,20 +584,16 @@ curl http://127.0.0.1:8080/health
 docker rm -f atm-dispenser
 ```
 
-### 6.5 Optional quality and security checks
+### 5.5 Optional quality and security checks
 
 ```bash
 python3 -m pip install -r atm-dispenser/requirements-dev.txt
 make lint coverage security            # ruff (incl. security rules) + mypy, coverage ≥ 70 %, pip-audit
 ```
 
-The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps](#10-cicd-and-devsecops)).
+The image, Dockerfile, secret and DAST scans run in CI (see [Security & DevSecOps](#7-security--devsecops)).
 
----
-
-## 7. Usage reference
-
-### 7.1 Command line
+### 5.6 Command-line reference
 
 | What | Command |
 |---|---|
@@ -612,9 +618,9 @@ The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps
 | `1` | At least one amount could not be dispensed ("Cannot dispense requested amount") |
 | `2` | Invalid input (amount, inventory or limit) |
 
-### 7.2 HTTP service
+### 5.7 HTTP service reference
 
-The service runs in the Docker image (section 6.4).
+The service runs in the Docker image (section 5.4).
 
 | Method & path | Purpose | Responses |
 |---|---|---|
@@ -649,7 +655,7 @@ Configuration (environment variables, e.g. `docker run -e ATM_INVENTORY="4:1, 3:
 Invalid configuration stops the service at start-up with a clear message (exit code 2). Logs are
 one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service down cleanly.
 
-### 7.3 Makefile shortcuts
+### 5.8 Makefile shortcuts
 
 | Target | Does |
 |---|---|
@@ -663,7 +669,9 @@ one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service 
 
 ---
 
-## 8. Validation rules and messages
+## 6. Validation & Testing Strategy
+
+### 6.1 Validation rules and messages
 
 | Input | Result |
 |---|---|
@@ -692,9 +700,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 - A denomination with **0 notes is allowed** (an empty cassette); if every count is 0, every
   withdrawal gives "Cannot dispense".
 
----
-
-## 9. Testing strategy
+### 6.2 Testing strategy
 
 ```bash
 python3 -m unittest discover -s atm-dispenser -v                       # all 199 tests, about 6 seconds
@@ -723,7 +729,38 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 
 ---
 
-## 10. CI/CD and DevSecOps
+## 7. Security & DevSecOps
+
+### 7.1 Security controls
+
+| Area | Control |
+|---|---|
+| Input | Every amount and inventory value validated; JSON only; body ≤ 1 KB; unknown fields rejected; numeric text ≤ 18 ASCII digits; per-withdrawal limit caps the work a request can cause |
+| HTTP protocol | A body the server does not read closes the connection, so it can never be read as a hidden second request; slow bodies get 408, cut-off bodies 400 |
+| Authentication | Optional bearer API key (`ATM_API_KEY`, ≥ 16 chars), compared in constant time; passed to the container from the environment, never stored in Git or written on a command line |
+| Errors | No stack traces or internal details in responses; JSON errors for malformed HTTP too |
+| HTTP headers | `nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `no-referrer`, `no-store`; server software version hidden |
+| Availability | Socket timeout against slow clients; connection backlog sized for bursts; CPU, memory and process limits on the container |
+| State file | Optional; written atomically (temporary file + rename, fsync); validated like any input when read; lives on a volume, so the container filesystem stays read-only |
+| Logging | Structured JSON logs; request bodies never logged; client request ids sanitised against log injection |
+| Container | Slim base with OS packages patched at build time, no pip or setuptools (nothing to install at runtime), application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
+| Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
+
+### 7.2 Automated security checks
+
+| Check | Tool | Fails the build on |
+|---|---|---|
+| Secret scanning (full history) | gitleaks | any secret |
+| SAST | ruff `S` rules (the Bandit rule set), CodeQL (`security-extended`) | any finding |
+| Dependency audit | pip-audit | known vulnerable version |
+| Dockerfile lint | hadolint | warning or worse |
+| Image validation | `scripts/validate-image.sh` | any failed check |
+| Image CVEs | Trivy | fixable HIGH/CRITICAL |
+| Dockerfile misconfiguration | Trivy config | HIGH/CRITICAL |
+| Running container | health check, non-root and read-only checks, smoke tests | any failure |
+| DAST against the running container | OWASP ZAP API scan (driven by `/openapi.json`) | report published as an artifact |
+
+### 7.3 CI/CD pipeline
 
 Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same stages for Azure DevOps.
 Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base image.
@@ -754,71 +791,19 @@ Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base 
 - The pipeline also runs every Monday, so newly published vulnerabilities in the code or the
   base image are found even without a push.
 
----
-
-## 11. Security
-
-### 11.1 Controls in this project
-
-| Area | Control |
-|---|---|
-| Input | Every amount and inventory value validated; JSON only; body ≤ 1 KB; unknown fields rejected; numeric text ≤ 18 ASCII digits; per-withdrawal limit caps the work a request can cause |
-| HTTP protocol | A body the server does not read closes the connection, so it can never be read as a hidden second request; slow bodies get 408, cut-off bodies 400 |
-| Authentication | Optional bearer API key (`ATM_API_KEY`, ≥ 16 chars), compared in constant time; passed to the container from the environment, never stored in Git or written on a command line |
-| Errors | No stack traces or internal details in responses; JSON errors for malformed HTTP too |
-| HTTP headers | `nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `no-referrer`, `no-store`; server software version hidden |
-| Availability | Socket timeout against slow clients; connection backlog sized for bursts; CPU, memory and process limits on the container |
-| State file | Optional; written atomically (temporary file + rename, fsync); validated like any input when read; lives on a volume, so the container filesystem stays read-only |
-| Logging | Structured JSON logs; request bodies never logged; client request ids sanitised against log injection |
-| Container | Slim base with OS packages patched at build time, no pip or setuptools (nothing to install at runtime), application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
-| Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
-
-### 11.2 Automated security checks (CI)
-
-| Check | Tool | Fails the build on |
-|---|---|---|
-| Secret scanning (full history) | gitleaks | any secret |
-| SAST | ruff `S` rules (the Bandit rule set), CodeQL (`security-extended`) | any finding |
-| Dependency audit | pip-audit | known vulnerable version |
-| Dockerfile lint | hadolint | warning or worse |
-| Image validation | `scripts/validate-image.sh` | any failed check |
-| Image CVEs | Trivy | fixable HIGH/CRITICAL |
-| Dockerfile misconfiguration | Trivy config | HIGH/CRITICAL |
-| Running container | health check, non-root and read-only checks, smoke tests | any failure |
-| DAST against the running container | OWASP ZAP API scan (driven by `/openapi.json`) | report published as an artifact |
-
-### 11.3 Reporting a vulnerability
+### 7.4 Reporting a vulnerability
 
 Please open a private security advisory on the GitHub repository rather than a public issue.
 
 ---
 
-## 12. Requirements checklist
+## 8. Troubleshooting & FAQ
 
-| # | Requirement from the brief | Where |
-|---|---|---|
-| R1 | Amount must be a positive whole number | `Validator.amount` |
-| R2 | Only available notes / never more than available | `NoteAllocator` uses each note at most once; `test_dispenser.NotesLimitTests` |
-| R3 | Minimum number of notes | Dynamic programming; brute-force cross-check in `AgainstBruteForceTests` |
-| R4 | Update inventory only after full allocation | `CashDispenser` builds the new inventory, then swaps it in |
-| R5 | "Cannot dispense requested amount" | `CANNOT_DISPENSE`, printed by the CLI, returned by the service |
-| R6 | Failed withdrawal leaves inventory unchanged | `test_dispenser.FailedWithdrawalTests` |
-| R7 | Do not assume greedy | `{4:1, 3:2}` → `3 × 2`, tested |
-| R8 | Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
-| R9 | Standard library only | `argparse`, `threading`, `http.server`, `json`, `math`, `functools`, `re`, `dataclasses`, `unittest` |
-| R10 | Validation messages | [Section 8](#8-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
-| R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `test_service.ConcurrentHttpTests`, `scripts/shared-inventory-test.sh` |
-| R12 | Positive and negative test cases | 199 tests ([section 9](#9-testing-strategy)); every validation error and every "cannot dispense" path |
-| R13 | README: design, how to run and test, complexity | Sections [3](#3-architecture-high-level-and-low-level-design), [6](#6-setup-and-validation-steps), [9](#9-testing-strategy) and [3.3.3](#333-time-and-space-complexity) |
-| R14 | Readable, maintainable code | Three small object-oriented modules with type hints; ruff and mypy checked in CI |
-
----
-
-## 13. Troubleshooting
+### 8.1 Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `python3: command not found` (Windows) | Use the Docker commands in 6.4, or WSL |
+| `python3: command not found` (Windows) | Use the Docker commands in 5.4, or WSL |
 | `Address already in use` | Another process uses port 8080: `PORT=8081 ./scripts/run-container.sh`, or stop it (`lsof -i :8080`) |
 | `401 Missing or invalid API key` | Send `Authorization: Bearer <key>` with the container's key (`docker exec atm-dispenser printenv ATM_API_KEY`) |
 | `415 Content-Type must be application/json` | Add `-H 'Content-Type: application/json'` |
@@ -827,3 +812,38 @@ Please open a private security advisory on the GitHub repository rather than a p
 | `Cannot connect to the Docker daemon` | Start Docker Desktop and try again |
 | `Cannot use the state file` / `Cannot read the state file` | The folder must exist and be writable; delete a corrupt file to start again from `--inventory` / `ATM_INVENTORY` |
 | Version check fails: time zone `Asia/Kolkata` not available | Install the time zone data (`tzdata`) on the build machine |
+
+### 8.2 Frequently asked questions
+
+**Why does the CLI start from the full inventory every time I run it?**
+Each run is a new ATM held in memory, so `python3 atm-dispenser/src/cli.py 2700` always reproduces
+the brief's example. To watch the inventory go down, withdraw several amounts in one run
+(`cli.py 2700 2700 800`), use interactive mode (`cli.py`, then `i` to show the inventory), or keep
+it between runs with `--state-file atm.json`.
+
+**With `--inventory "500:2, 200:10, 100:20"`, why is ₹2400 paid as ₹500 × 2, ₹200 × 7 and not ₹500 × 4, ₹200 × 2?**
+That ATM holds only two ₹500 notes, and the brief forbids dispensing notes that are not there.
+With two ₹500 notes the fewest possible is 9 notes (₹500 × 2 + ₹200 × 7). With the default
+inventory (8 × ₹500), ₹2400 is paid as ₹500 × 4, ₹200 × 2.
+
+**Where is the exit code?**
+Programs return it to the shell rather than print it: run `echo $?` straight after the command.
+`0` = dispensed, `1` = cannot dispense, `2` = invalid input.
+
+**Are only ₹500, ₹200 and ₹100 supported?**
+No. Any positive whole-number denominations work (`--inventory "2000:2, 50:4, 7:3"` or
+`ATM_INVENTORY`); ₹500/₹200/₹100 is only the default from the brief.
+
+**What is the GCD?**
+The Greatest Common Divisor of the denominations (100 for ₹500/₹200/₹100). Every payable amount is
+a multiple of it, so the algorithm works in those units and rejects other amounts at once
+(section [2.3.2](#232-dynamic-programming-bounded-coin-change)).
+
+**Can the withdrawal limit be changed?**
+Yes: `--max-withdrawal` on the command line, `ATM_MAX_WITHDRAWAL` for the service (default 200000).
+
+**How is the ATM refilled?**
+By restarting it with new counts (`--inventory` / `ATM_INVENTORY`, or by replacing the state file
+while it is stopped). There is deliberately no refill API: it would let anyone with the key add
+cash that is not physically in the machine.
+
