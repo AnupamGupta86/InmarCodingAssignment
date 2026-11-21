@@ -478,6 +478,9 @@ InmarCodingAssignment/
 
 All commands run from the repository root and use `python3`.
 
+> **macOS (zsh):** run `setopt interactivecomments` once (add it to `~/.zshrc` to keep it), so the
+> `# comments` after the commands below are ignored when you paste them.
+
 | Platform | How to run |
 |---|---|
 | macOS, Linux | `python3` 3.14.8 for the CLI and tests; Docker for the service |
@@ -495,7 +498,7 @@ git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd Inmar
 
 ```bash
 python3 -m unittest discover -s atm-dispenser        # 211 tests
-python3 atm-dispenser/src/cli.py 2700                # the brief's example
+python3 atm-dispenser/src/cli.py 2700                # example from the brief
 ```
 
 *Approach 2: HTTP service in Docker* (needs Docker, plus Python 3.14.8 because the script runs the tests
@@ -505,7 +508,7 @@ first; Docker-only commands and details in [5.4](#54-build-validate-and-run-the-
 ./scripts/run-container.sh                           # test, build, validate and run the service
 export ATM_API_KEY="$(docker exec atm-dispenser printenv ATM_API_KEY)"
 curl -s -H "Authorization: Bearer $ATM_API_KEY" -H "Content-Type: application/json" \
-     -d '{"amount": 2700}' http://127.0.0.1:8080/withdrawals                # the brief's example
+     -d '{"amount": 2700}' http://127.0.0.1:8080/withdrawals                # example from the brief
 ./scripts/run-container.sh --stop                    # stop and remove the container
 ```
 
@@ -836,6 +839,7 @@ Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base 
 | `415 Content-Type must be application/json` | Add `-H 'Content-Type: application/json'` |
 | Image validation fails | The failing check is printed; rebuild with `--build-arg VERSION=...` and check the Dockerfile |
 | Container not `healthy` | `docker logs atm-dispenser`; check port 8080 is free; `docker inspect atm-dispenser` shows the health-check output |
+| `quote>` prompt or `command not found: #` after pasting a command (macOS zsh) | zsh does not ignore `# comments` by default: press Ctrl+C, run `setopt interactivecomments` (add it to `~/.zshrc` to keep it), paste again |
 | `Cannot connect to the Docker daemon` | Start Docker Desktop and try again |
 | `Conflict. The container name "/atm-dispenser" is already in use` | A container with that name is still running (e.g. from `run-container.sh`): `./scripts/run-container.sh --stop` or `docker rm -f atm-dispenser`, then run again |
 | `Cannot use the state file` / `Cannot read the state file` | The folder must exist and be writable; delete a corrupt file to start again from `--inventory` / `ATM_INVENTORY` |

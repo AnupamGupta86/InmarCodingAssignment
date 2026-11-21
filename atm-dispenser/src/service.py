@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import socketserver
 import sys
 import threading
@@ -416,6 +417,12 @@ class ATMServer(ThreadingHTTPServer):
         with contextlib.suppress(OSError):
             request.settimeout(1)
             request.sendall(response)
+            # Close gracefully: closing with the client's request still unread makes the operating
+            # system send a reset, which can wipe out the 503 before the client reads it (macOS).
+            request.shutdown(socket.SHUT_WR)
+            request.settimeout(0.1)
+            while request.recv(4096):
+                pass
         self.shutdown_request(request)
 
     def server_bind(self) -> None:
