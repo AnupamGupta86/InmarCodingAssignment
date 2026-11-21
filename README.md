@@ -9,13 +9,12 @@
 5. [Folder structure](#5-folder-structure)
 6. [Setup and validation steps](#6-setup-and-validation-steps)
 7. [Usage reference](#7-usage-reference)
-8. [Algorithm: approach and complexity](#8-algorithm-approach-and-complexity)
-9. [Validation rules and messages](#9-validation-rules-and-messages)
-10. [Testing strategy](#10-testing-strategy)
-11. [CI/CD and DevSecOps](#11-cicd-and-devsecops)
-12. [Security](#12-security)
+8. [Validation rules and messages](#8-validation-rules-and-messages)
+9. [Testing strategy](#9-testing-strategy)
+10. [CI/CD and DevSecOps](#10-cicd-and-devsecops)
+11. [Security](#11-security)
+12. [Production considerations](#12-production-considerations)
 13. [Requirements checklist](#13-requirements-checklist)
-14. [Production considerations](#14-production-considerations)
 
 ---
 
@@ -45,6 +44,15 @@ Key features:
 - **Tested and shipped like production code:** 183 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
 
+**Quick start** (macOS/Linux with Python 3.14.8 and Docker; details in [section 6](#6-setup-and-validation-steps)):
+
+```bash
+git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
+python3 -m unittest discover -s atm-dispenser        # 183 tests
+python3 atm-dispenser/src/cli.py 2700                # the brief's example
+./scripts/run-container.sh                           # test, build, validate and run the service
+```
+
 ---
 
 ## 2. Assumptions
@@ -60,6 +68,12 @@ Key features:
 - The inventory is in memory and resets when the program or service restarts (persistence is out of scope).
 - Python is run as `python3` (macOS and Linux). Windows users run the Docker image (or use WSL),
   because `python3` is not guaranteed to exist on Windows.
+- "Minimum notes" means the fewest notes in total, not the fewest denominations. When two
+  combinations need the same number of notes, the one with higher-value notes is chosen, so the
+  result is always the same for the same input.
+- One running program or service is one ATM. The lock guarantees correct concurrent withdrawals
+  inside that process; several processes sharing one stock need a database (see
+  [Production considerations](#12-production-considerations)).
 - Build times in versions are UTC.
 
 ---
@@ -240,7 +254,63 @@ Design decisions:
   the concurrency tests use this to slow allocation down and prove the lock works.
 - **One process = one ATM.** Several copies of the service would be several ATMs with separate
   notes; scaling out needs shared storage with row locking
-  (see [Production considerations](#14-production-considerations)).
+  (see [Production considerations](#12-production-considerations)).
+
+Alternatives considered:
+
+| Option | Why it was not chosen |
+|---|---|
+| Greedy (biggest note first) | Fast, but wrong for some inventories (section 3.3.1) |
+| Try every combination (brute force) | Always correct, but exponential; used only in the tests as an oracle |
+| Integer linear programming solver | Correct and fast, but needs a third-party library (the brief allows the standard library only) |
+| Web framework (Flask, FastAPI) | Adds dependencies to patch and scan; `http.server` with explicit limits is enough for three endpoints |
+| A queue or a single worker thread instead of a lock | Also safe, but more moving parts for the same guarantee |
+
+### 3.3 Algorithm: approach and complexity
+
+#### 3.3.1 Why "biggest note first" (greedy) is not enough
+
+| Inventory | Amount | Greedy | Correct |
+|---|---|---|---|
+| `{4: 1, 3: 2}` | 6 | 4, then 2 is impossible → **fails** | `3 × 2` |
+| `{50: 1, 20: 3}` | 60 | 50, then 10 is impossible → **fails** | `20 × 3` |
+| `{4: 10, 3: 10, 1: 10}` | 6 | 4 + 1 + 1 = 3 notes | `3 × 2` = 2 notes |
+
+#### 3.3.2 Dynamic programming ("bounded coin change")
+
+`NoteAllocator` builds a table that answers, for every amount from 0 to the target, *"what is the
+fewest notes that make exactly this amount?"*. Every combination of the available notes is
+considered, so the answer is always the true minimum, and "no answer" really means the amount
+cannot be paid.
+
+1. **Shrink the problem with the GCD.** Every payable amount is a multiple of the greatest
+   common divisor of the denominations (100 for 500/200/100). So ₹2700 becomes 27 units, and
+   ₹250 is rejected immediately.
+2. **Only count useful notes.** No denomination can use more than `amount ÷ value` notes, so a
+   machine reporting a trillion notes is no slower than one with just enough.
+3. **Bundle the notes.** 8 notes of ₹500 become bundles of 1, 2, 4 and 1 notes. Any count from
+   0 to 8 is a sum of some of these bundles, so the algorithm only decides "use this bundle or not".
+4. **Add the bundles one at a time.** For each bundle and each amount, check whether
+   "this bundle + the best way to make the rest" needs fewer notes than the best found so far.
+5. **Read the answer back** by walking the bundles in reverse.
+
+**Ties:** if two combinations use the same number of notes, the one with higher-value notes is
+chosen (6 from `{4:1, 3:2, 2:1}` gives `4 + 2`), so results are always the same.
+
+#### 3.3.3 Time and space complexity
+
+Let **S** = amount ÷ GCD of the denominations, and **B** = number of bundles
+(the sum over denominations of ⌈log₂(usable notes + 1)⌉).
+
+| | Complexity | Notes |
+|---|---|---|
+| Time | **O(S × B)** | ₹2700 from the brief: S = 27, B = 13 → about 350 steps |
+| Space | **O(S × B)** | one byte per (bundle, amount) to rebuild the answer, plus O(S) for the table |
+| Inventory update | O(D) | D = number of denominations |
+
+Measured: ₹199,990 from 7 denominations with up to 2,000 notes each takes about 0.1 s. Greedy is
+O(D) but can be wrong; the textbook bounded version is O(S × total notes); bundling replaces
+"total notes" with its logarithm.
 
 ---
 
@@ -251,9 +321,10 @@ Design decisions:
 1. **Validate the amount** before anything else, so bad input never touches the inventory.
 2. **Lock** the ATM.
 3. **Allocate**: find the fewest-note combination from the notes currently in the machine.
-4. If none exists, return `None`: nothing was changed (rules 6 and 7 of the brief).
-5. Otherwise build the **new inventory as a complete copy**, swap it in and return the notes (rule 5).
-6. **Unlock.**
+4. If none exists, **unlock** and report *"Cannot dispense requested amount"*: nothing was
+   changed (requirements R5 and R6 in [section 13](#13-requirements-checklist)).
+5. Otherwise build the **new inventory as a complete copy**, swap it in, **unlock** and return the
+   notes (requirement R4).
 
 ### 4.2 Build, validate and run
 
@@ -396,7 +467,7 @@ python3 -m pip install -r atm-dispenser/requirements-dev.txt
 make lint coverage security            # ruff (incl. security rules) + mypy, coverage ≥ 70 %, pip-audit
 ```
 
-The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps](#11-cicd-and-devsecops)).
+The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps](#10-cicd-and-devsecops)).
 
 ### 6.6 Troubleshooting
 
@@ -485,55 +556,7 @@ one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service 
 
 ---
 
-## 8. Algorithm: approach and complexity
-
-### Why "biggest note first" (greedy) is not enough
-
-| Inventory | Amount | Greedy | Correct |
-|---|---|---|---|
-| `{4: 1, 3: 2}` | 6 | 4, then 2 is impossible → **fails** | `3 × 2` |
-| `{50: 1, 20: 3}` | 60 | 50, then 10 is impossible → **fails** | `20 × 3` |
-| `{4: 10, 3: 10, 1: 10}` | 6 | 4 + 1 + 1 = 3 notes | `3 × 2` = 2 notes |
-
-### Dynamic programming ("bounded coin change")
-
-`NoteAllocator` builds a table that answers, for every amount from 0 to the target, *"what is the
-fewest notes that make exactly this amount?"*. Every combination of the available notes is
-considered, so the answer is always the true minimum, and "no answer" really means the amount
-cannot be paid.
-
-1. **Shrink the problem with the GCD.** Every payable amount is a multiple of the greatest
-   common divisor of the denominations (100 for 500/200/100). So ₹2700 becomes 27 units, and
-   ₹250 is rejected immediately.
-2. **Only count useful notes.** No denomination can use more than `amount ÷ value` notes, so a
-   machine reporting a trillion notes is no slower than one with just enough.
-3. **Bundle the notes.** 8 notes of ₹500 become bundles of 1, 2, 4 and 1 notes. Any count from
-   0 to 8 is a sum of some of these bundles, so the algorithm only decides "use this bundle or not".
-4. **Add the bundles one at a time.** For each bundle and each amount, check whether
-   "this bundle + the best way to make the rest" needs fewer notes than the best found so far.
-5. **Read the answer back** by walking the bundles in reverse.
-
-**Ties:** if two combinations use the same number of notes, the one with higher-value notes is
-chosen (6 from `{4:1, 3:2, 2:1}` gives `4 + 2`), so results are always the same.
-
-### Time and space complexity
-
-Let **S** = amount ÷ GCD of the denominations, and **B** = number of bundles
-(the sum over denominations of ⌈log₂(usable notes + 1)⌉).
-
-| | Complexity | Notes |
-|---|---|---|
-| Time | **O(S × B)** | ₹2700 from the brief: S = 27, B = 13 → about 350 steps |
-| Space | **O(S × B)** | one byte per (bundle, amount) to rebuild the answer, plus O(S) for the table |
-| Inventory update | O(D) | D = number of denominations |
-
-Measured: ₹199,990 from 7 denominations with up to 2,000 notes each takes about 0.1 s. Greedy is
-O(D) but can be wrong; the textbook bounded version is O(S × total notes); bundling replaces
-"total notes" with its logarithm.
-
----
-
-## 9. Validation rules and messages
+## 8. Validation rules and messages
 
 | Input | Result |
 |---|---|
@@ -562,7 +585,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 
 ---
 
-## 10. Testing strategy
+## 9. Testing strategy
 
 ```bash
 python3 -m unittest discover -s atm-dispenser -v                       # all 183 tests, about 6 seconds
@@ -589,7 +612,7 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 
 ---
 
-## 11. CI/CD and DevSecOps
+## 10. CI/CD and DevSecOps
 
 Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same stages for Azure DevOps.
 Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base image.
@@ -622,9 +645,9 @@ Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base 
 
 ---
 
-## 12. Security
+## 11. Security
 
-### Controls in this project
+### 11.1 Controls in this project
 
 | Area | Control |
 |---|---|
@@ -638,7 +661,7 @@ Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base 
 | Container | Slim base with OS packages patched at build time, no pip or setuptools (nothing to install at runtime), application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
 | Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
 
-### Automated security checks (CI)
+### 11.2 Automated security checks (CI)
 
 | Check | Tool | Fails the build on |
 |---|---|---|
@@ -652,31 +675,20 @@ Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base 
 | Running container | health check, non-root and read-only checks, smoke tests | any failure |
 | DAST against the running container | OWASP ZAP API scan (driven by `/openapi.json`) | report published as an artifact |
 
-### Reporting a vulnerability
+### 11.3 Reporting a vulnerability
 
 Please open a private security advisory on the GitHub repository rather than a public issue.
 
 ---
 
-## 13. Requirements checklist
+## 12. Production considerations
 
-| Requirement from the brief | Where |
-|---|---|
-| Amount must be a positive whole number | `Validator.amount` |
-| Only available notes / never more than available | `NoteAllocator` uses each note at most once; `test_allocator.NotesLimitTests` |
-| Minimum number of notes | Dynamic programming; brute-force cross-check in `AgainstBruteForceTests` |
-| Update inventory only after full allocation | `CashDispenser` builds the new inventory, then swaps it in |
-| "Cannot dispense requested amount" | `CANNOT_DISPENSE`, printed by the CLI, returned by the service |
-| Failed withdrawal leaves inventory unchanged | `test_dispenser.FailedWithdrawalTests` |
-| Do not assume greedy | `{4:1, 3:2}` → `3 × 2`, tested |
-| Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
-| Standard library only | `argparse`, `threading`, `http.server`, `json`, `math`, `functools`, `re`, `dataclasses`, `unittest` |
-| Validation messages | [Section 9](#9-validation-rules-and-messages); `test_validation.py` |
-| Concurrent withdrawals must not share notes | Lock in `CashDispenser`; `test_concurrency.py`, `ConcurrentHttpTests` |
+Known limitations of this submission:
 
----
-
-## 14. Production considerations
+- The inventory is held in memory: it resets on restart, and there is no way to refill it while running.
+- One process is one ATM; the service cannot be scaled out as it is (see the database options below).
+- `http.server` handles one thread per connection; fine for one ATM, not for heavy traffic.
+- No TLS in the container itself: it is expected behind an ingress or gateway that terminates TLS.
 
 Already in place: API key, input and size limits, per-withdrawal limit, security headers, JSON
 logs, health checks, graceful shutdown, versioned and validated images, and a hardened container.
@@ -700,3 +712,24 @@ several servers update the same stock needs the guarantee from shared storage:
 - **Dispense failures after allocation** (the hardware jams): reserve the notes first, then confirm
   or release them once the hardware reports what was actually paid out, and keep an audit log.
 - **Idempotency key** per withdrawal request, so a retried request is not paid twice.
+
+---
+
+## 13. Requirements checklist
+
+| # | Requirement from the brief | Where |
+|---|---|---|
+| R1 | Amount must be a positive whole number | `Validator.amount` |
+| R2 | Only available notes / never more than available | `NoteAllocator` uses each note at most once; `test_allocator.NotesLimitTests` |
+| R3 | Minimum number of notes | Dynamic programming; brute-force cross-check in `AgainstBruteForceTests` |
+| R4 | Update inventory only after full allocation | `CashDispenser` builds the new inventory, then swaps it in |
+| R5 | "Cannot dispense requested amount" | `CANNOT_DISPENSE`, printed by the CLI, returned by the service |
+| R6 | Failed withdrawal leaves inventory unchanged | `test_dispenser.FailedWithdrawalTests` |
+| R7 | Do not assume greedy | `{4:1, 3:2}` → `3 × 2`, tested |
+| R8 | Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
+| R9 | Standard library only | `argparse`, `threading`, `http.server`, `json`, `math`, `functools`, `re`, `dataclasses`, `unittest` |
+| R10 | Validation messages | [Section 8](#8-validation-rules-and-messages); `test_validation.py` |
+| R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser`; `test_concurrency.py`, `ConcurrentHttpTests` |
+| R12 | Positive and negative test cases | 183 tests ([section 9](#9-testing-strategy)); every validation error and every "cannot dispense" path |
+| R13 | README: design, how to run and test, complexity | Sections [3](#3-architecture-high-level-and-low-level-design), [6](#6-setup-and-validation-steps), [9](#9-testing-strategy) and [3.3.3](#333-time-and-space-complexity) |
+| R14 | Readable, maintainable code | Three small object-oriented modules with type hints; ruff and mypy checked in CI |
