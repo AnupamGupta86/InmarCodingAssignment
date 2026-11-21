@@ -67,7 +67,7 @@ Key features:
 
 ## 2. Solution Architecture & Workflow
 
-### 2.1 High-level design (HLD)
+### 2.1 High-Level Design (HLD)
 
 **Components and where they run**
 
@@ -127,7 +127,7 @@ flowchart LR
 
 The same pipeline is defined for Azure DevOps in `azure-pipelines.yml`.
 
-### 2.2 Low-level design (LLD)
+### 2.2 Low-Level Design (LLD)
 
 **Classes** (three source files in `atm-dispenser/src/`)
 
@@ -333,9 +333,9 @@ Alternatives considered:
 | A queue or a single worker thread instead of a lock | Also safe, but more moving parts for the same guarantee |
 | SQLite or another database for the state | Also standard library (SQLite), but a JSON file is readable by eye and the file lock is enough on one machine; a database is the step for several machines |
 
-### 2.3 Algorithm: approach and complexity
+### 2.3 Algorithm: Approach And Complexity
 
-#### 2.3.1 Why "biggest note first" (greedy) is not enough
+#### 2.3.1 Why "Biggest Note First" (Greedy) Is Not Enough
 
 | Inventory | Amount | Greedy | Correct |
 |---|---|---|---|
@@ -343,7 +343,7 @@ Alternatives considered:
 | `{50: 1, 20: 3}` | 60 | 50, then 10 is impossible → **fails** | `20 × 3` |
 | `{4: 10, 3: 10, 1: 10}` | 6 | 4 + 1 + 1 = 3 notes | `3 × 2` = 2 notes |
 
-#### 2.3.2 Dynamic programming ("bounded coin change")
+#### 2.3.2 Dynamic Programming ("Bounded Coin Change")
 
 `NoteAllocator` builds a table that answers, for every amount from 0 to the target, *"what is the
 fewest notes that make exactly this amount?"*. Every combination of the available notes is
@@ -364,14 +364,14 @@ cannot be paid.
 **Ties:** if two combinations use the same number of notes, the one with higher-value notes is
 chosen (6 from `{4:1, 3:2, 2:1}` gives `4 + 2`), so results are always the same.
 
-#### 2.3.3 Time and space complexity
+#### 2.3.3 Time And Space Complexity
 
 Let **S** = amount ÷ GCD (greatest common divisor) of the denominations, and **B** = number of bundles
 (the sum over denominations of ⌈log₂(usable notes + 1)⌉).
 
 | | Complexity | Notes |
 |---|---|---|
-| Time | **O(S × B)** | ₹2700 from the brief: S = 27, B = 13 → about 350 steps |
+| Time | **O(S × B)** | ₹2700 from the brief: S = 27, B = 12 → about 336 steps |
 | Space | **O(S × B)** | one byte per (bundle, amount) to rebuild the answer, plus O(S) for the table |
 | Inventory update | O(D) | D = number of denominations |
 
@@ -379,7 +379,7 @@ Measured: ₹199,990 from 7 denominations with up to 2,000 notes each takes abou
 O(D) but can be wrong; the textbook bounded version is O(S × total notes); bundling replaces
 "total notes" with its logarithm.
 
-### 2.4 Workflow: a withdrawal
+### 2.4 Workflow: A Withdrawal
 
 ```mermaid
 flowchart TD
@@ -398,7 +398,7 @@ Invalid input never touches the inventory, a refused withdrawal changes nothing 
 and R6 in [section 4](#4-requirements-coverage)), and the inventory is updated only after the
 whole amount is allocated (R4). If saving the state file fails, nothing changes.
 
-### 2.5 Workflow: build, validate and run
+### 2.5 Workflow: Build, Validate And Run
 
 The same order is used on a laptop (`scripts/run-container.sh`) and in CI. Nothing is built until
 the tests pass, and nothing is run until the image is validated.
@@ -483,13 +483,30 @@ All commands run from the repository root and use `python3`.
 | macOS, Linux | `python3` 3.14.8 for the CLI and tests; Docker for the service |
 | Windows | Docker (sections [5.4](#54-build-validate-and-run-the-service-in-a-container) and [5.7](#57-http-service-reference)), or the macOS/Linux commands inside WSL |
 
-**Quick start** (macOS/Linux with Python 3.14.8 and Docker; each step is explained in [5.1](#51-prerequisites)–[5.4](#54-build-validate-and-run-the-service-in-a-container)):
+**Quick start**
+
+Get the code:
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
+```
+
+*Approach 1: command line* (needs Python 3.14.8; details in [5.2](#52-get-the-code-and-run-the-tests) and [5.3](#53-validate-the-use-cases-with-the-command-line)):
+
+```bash
 python3 -m unittest discover -s atm-dispenser        # 211 tests
 python3 atm-dispenser/src/cli.py 2700                # the brief's example
+```
+
+*Approach 2: HTTP service in Docker* (needs Docker, plus Python 3.14.8 because the script runs the tests
+first; Docker-only commands and details in [5.4](#54-build-validate-and-run-the-service-in-a-container)):
+
+```bash
 ./scripts/run-container.sh                           # test, build, validate and run the service
+export ATM_API_KEY="$(docker exec atm-dispenser printenv ATM_API_KEY)"
+curl -s -H "Authorization: Bearer $ATM_API_KEY" -H "Content-Type: application/json" \
+     -d '{"amount": 2700}' http://127.0.0.1:8080/withdrawals                # the brief's example
+./scripts/run-container.sh --stop                    # stop and remove the container
 ```
 
 ### 5.1 Prerequisites
@@ -500,7 +517,7 @@ python3 atm-dispenser/src/cli.py 2700                # the brief's example
 | Service in a container ([5.4](#54-build-validate-and-run-the-service-in-a-container)) | Docker | `docker version` |
 | Optional dev checks ([5.5](#55-optional-quality-and-security-checks)) | ruff, mypy, coverage, pip-audit in a virtual environment (`.venv`, set up in [5.5](#55-optional-quality-and-security-checks)) | `source .venv/bin/activate && ruff --version` |
 
-### 5.2 Get the code and run the tests
+### 5.2 Get The Code And Run The Tests
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
@@ -511,7 +528,7 @@ python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 211 tests 
 Nothing to install and no `PYTHONPATH` to set: the scripts find their own modules, and the tests
 add `src/` to the path themselves.
 
-### 5.3 Validate the use cases with the command line
+### 5.3 Validate The Use Cases With The Command Line
 
 | # | Use case | Command | Expected result |
 |---|---|---|---|
@@ -531,7 +548,7 @@ add `src/` to the path themselves.
 
 Check an exit code with `echo $?` straight after the command.
 
-### 5.4 Build, validate and run the service in a container
+### 5.4 Build, Validate And Run The Service In A Container
 
 One command does every step:
 
@@ -570,6 +587,7 @@ docker logs -f atm-dispenser        # JSON request logs (Ctrl+C to stop followin
 **Keep the inventory across container restarts** (a named volume holds the state file):
 
 ```bash
+./scripts/run-container.sh --stop        # free the name if the container from above is still running
 docker run -d --name atm-dispenser -p 127.0.0.1:8080:8080 --read-only --cap-drop ALL \
   -v atm-data:/data -e ATM_STATE_FILE=/data/atm.json atm-dispenser:local
 ```
@@ -584,7 +602,7 @@ curl http://127.0.0.1:8080/health
 docker rm -f atm-dispenser
 ```
 
-### 5.5 Optional quality and security checks
+### 5.5 Optional Quality And Security Checks
 
 The dev tools go in a virtual environment (Homebrew and recent Linux Pythons refuse system-wide
 `pip install` with `error: externally-managed-environment`):
@@ -598,7 +616,7 @@ deactivate                             # leave the virtual environment
 
 The image, Dockerfile, secret and DAST scans run in CI (see [Security & DevSecOps](#7-security--devsecops)).
 
-### 5.6 Command-line reference
+### 5.6 Command-Line Reference
 
 | What | Command |
 |---|---|
@@ -623,7 +641,7 @@ The image, Dockerfile, secret and DAST scans run in CI (see [Security & DevSecOp
 | `1` | At least one amount could not be dispensed ("Cannot dispense requested amount") |
 | `2` | Invalid input (amount, inventory or limit), or a state file that cannot be read or saved |
 
-### 5.7 HTTP service reference
+### 5.7 HTTP Service Reference
 
 The service runs in the Docker image (section [5.4](#54-build-validate-and-run-the-service-in-a-container)).
 
@@ -660,7 +678,7 @@ Configuration (environment variables, e.g. `docker run -e ATM_INVENTORY="4:1, 3:
 Invalid configuration stops the service at start-up with a clear message (exit code 2). Logs are
 one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service down cleanly.
 
-### 5.8 Makefile shortcuts
+### 5.8 Makefile Shortcuts
 
 | Target | Does |
 |---|---|
@@ -676,7 +694,7 @@ one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service 
 
 ## 6. Validation & Testing Strategy
 
-### 6.1 Validation rules and messages
+### 6.1 Validation Rules And Messages
 
 | Input | Result |
 |---|---|
@@ -712,7 +730,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 - A denomination with **0 notes is allowed** (an empty cassette); if every count is 0, every
   withdrawal gives "Cannot dispense".
 
-### 6.2 Testing strategy
+### 6.2 Testing Strategy
 
 ```bash
 python3 -m unittest discover -s atm-dispenser -v                       # all 211 tests, about 6 seconds
@@ -744,7 +762,7 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 
 ## 7. Security & DevSecOps
 
-### 7.1 Security controls
+### 7.1 Security Controls
 
 | Area | Control |
 |---|---|
@@ -759,7 +777,7 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 | Container | Slim base with OS packages patched at build time, no pip or setuptools (nothing to install at runtime), application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
 | Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
 
-### 7.2 Automated security checks
+### 7.2 Automated Security Checks
 
 | Check | Tool | Fails the build on |
 |---|---|---|
@@ -773,7 +791,7 @@ python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against
 | Running container | health check, non-root and read-only checks, smoke tests | any failure |
 | DAST against the running container | OWASP ZAP API scan (driven by `/openapi.json`) | report published as an artifact |
 
-### 7.3 CI/CD pipeline
+### 7.3 CI/CD Pipeline
 
 Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same stages for Azure DevOps.
 Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base image.
@@ -804,10 +822,6 @@ Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base 
 - The pipeline also runs every Monday, so newly published vulnerabilities in the code or the
   base image are found even without a push.
 
-### 7.4 Reporting a vulnerability
-
-Please open a private security advisory on the GitHub repository rather than a public issue.
-
 ---
 
 ## 8. Troubleshooting & FAQ
@@ -823,40 +837,72 @@ Please open a private security advisory on the GitHub repository rather than a p
 | Image validation fails | The failing check is printed; rebuild with `--build-arg VERSION=...` and check the Dockerfile |
 | Container not `healthy` | `docker logs atm-dispenser`; check port 8080 is free; `docker inspect atm-dispenser` shows the health-check output |
 | `Cannot connect to the Docker daemon` | Start Docker Desktop and try again |
+| `Conflict. The container name "/atm-dispenser" is already in use` | A container with that name is still running (e.g. from `run-container.sh`): `./scripts/run-container.sh --stop` or `docker rm -f atm-dispenser`, then run again |
 | `Cannot use the state file` / `Cannot read the state file` | The folder must exist and be writable; delete a corrupt file to start again from `--inventory` / `ATM_INVENTORY` |
 | Version check fails: time zone `Asia/Kolkata` not available | Install the time zone data (`tzdata`) on the build machine |
 
-### 8.2 Frequently asked questions
+### 8.2 Frequently Asked Questions
 
-**Why does the CLI start from the full inventory every time I run it?**
+**Q1. Why does the CLI start from the full inventory every time I run it?**
+
 Each run is a new ATM held in memory, so `python3 atm-dispenser/src/cli.py 2700` always reproduces
-the brief's example. To watch the inventory go down, withdraw several amounts in one run
-(`cli.py 2700 2700 800`), use interactive mode (`cli.py`, then `i` to show the inventory), or keep
-it between runs with `--state-file atm.json`.
+the brief's example. To watch the inventory go down:
 
-**With `--inventory "500:2, 200:10, 100:20"`, why is ₹2400 paid as ₹500 × 2, ₹200 × 7 and not ₹500 × 4, ₹200 × 2?**
-That ATM holds only two ₹500 notes, and the brief forbids dispensing notes that are not there.
-With two ₹500 notes the fewest possible is 9 notes (₹500 × 2 + ₹200 × 7). With the default
-inventory (8 × ₹500), ₹2400 is paid as ₹500 × 4, ₹200 × 2.
+```bash
+python3 atm-dispenser/src/cli.py 2700 2700 800                    # several withdrawals in one run
+python3 atm-dispenser/src/cli.py                                  # interactive: type amounts, i = inventory, q = quit
+python3 atm-dispenser/src/cli.py --state-file atm.json 2700       # kept between runs in atm.json
+```
 
-**Where is the exit code?**
-Programs return it to the shell rather than print it: run `echo $?` straight after the command.
-`0` = dispensed, `1` = cannot dispense, `2` = invalid input.
+**Q2. With `--inventory "500:2, 200:10, 100:20"`, why is ₹2400 paid as ₹500 × 2 + ₹200 × 7, not ₹500 × 4 + ₹200 × 2?**
 
-**Are only ₹500, ₹200 and ₹100 supported?**
-No. Any positive whole-number denominations work (`--inventory "2000:2, 50:4, 7:3"` or
-`ATM_INVENTORY`); ₹500/₹200/₹100 is only the default from the brief.
+- That ATM holds only **two** ₹500 notes, and the brief forbids dispensing notes that are not there.
+- With two ₹500 notes, the fewest possible is 9 notes: ₹500 × 2 + ₹200 × 7.
+- With the default inventory (8 × ₹500), ₹2400 is paid as ₹500 × 4 + ₹200 × 2 (6 notes).
 
-**What is the GCD?**
-The Greatest Common Divisor of the denominations (100 for ₹500/₹200/₹100). Every payable amount is
-a multiple of it, so the algorithm works in those units and rejects other amounts at once
-(section [2.3.2](#232-dynamic-programming-bounded-coin-change)).
+**Q3. Where is the exit code?**
 
-**Can the withdrawal limit be changed?**
-Yes: `--max-withdrawal` on the command line, `ATM_MAX_WITHDRAWAL` for the service (default 200000).
+Programs return it to the shell instead of printing it. Check it straight after the command:
 
-**How is the ATM refilled?**
-By restarting it with new counts (`--inventory` / `ATM_INVENTORY`, or by replacing the state file
-while it is stopped). There is deliberately no refill API: it would let anyone with the key add
-cash that is not physically in the machine.
+```bash
+python3 atm-dispenser/src/cli.py 9000
+echo $?        # 1
+```
 
+| Code | Meaning |
+|---|---|
+| `0` | Dispensed |
+| `1` | Cannot dispense requested amount |
+| `2` | Invalid input, or a state file that cannot be read or saved |
+
+**Q4. Are only ₹500, ₹200 and ₹100 supported?**
+
+No. Any positive whole-number denominations work; ₹500/₹200/₹100 is only the default from the brief.
+
+```bash
+python3 atm-dispenser/src/cli.py --inventory "2000:2, 50:4, 7:3" 2064    # ₹2000 × 1, ₹50 × 1, ₹7 × 2
+```
+
+For the service, set `ATM_INVENTORY` the same way.
+
+**Q5. What is the GCD?**
+
+- GCD = **Greatest Common Divisor** of the denominations: 100 for ₹500/₹200/₹100.
+- Every payable amount is a multiple of it, so ₹2700 is worked out as 27 units and ₹250 is
+  rejected at once.
+- See [2.3.2](#232-dynamic-programming-bounded-coin-change).
+
+**Q6. Can the withdrawal limit be changed?**
+
+Yes. The default is 200000 per withdrawal.
+
+| Where | How |
+|---|---|
+| Command line | `--max-withdrawal 500000` |
+| Service | `ATM_MAX_WITHDRAWAL=500000` |
+
+**Q7. How is the ATM refilled?**
+
+- Restart it with the new counts: `--inventory` / `ATM_INVENTORY`, or replace the state file while it is stopped.
+- There is deliberately **no refill API**: it would let anyone with the key add cash that is not
+  physically in the machine.
