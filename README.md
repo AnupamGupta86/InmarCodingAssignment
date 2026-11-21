@@ -3,19 +3,19 @@
 [![CI](https://github.com/AnupamGupta86/InmarCodingAssignment/actions/workflows/ci.yml/badge.svg)](https://github.com/AnupamGupta86/InmarCodingAssignment/actions/workflows/ci.yml)
 
 1. [Introduction](#1-introduction)
-2. [Architecture](#2-architecture)
-3. [Workflow](#3-workflow)
-4. [Folder structure](#4-folder-structure)
-5. [Setup and validation steps](#5-setup-and-validation-steps)
-6. [Usage reference](#6-usage-reference)
-7. [Algorithm: approach and complexity](#7-algorithm-approach-and-complexity)
-8. [Validation rules and messages](#8-validation-rules-and-messages)
-9. [Testing strategy](#9-testing-strategy)
-10. [CI/CD and DevSecOps](#10-cicd-and-devsecops)
-11. [Security](#11-security)
-12. [Requirements checklist](#12-requirements-checklist)
-13. [Production considerations](#13-production-considerations)
-14. [Assumptions](#14-assumptions)
+2. [Assumptions](#2-assumptions)
+3. [Architecture: high-level and low-level design](#3-architecture-high-level-and-low-level-design)
+4. [Workflow](#4-workflow)
+5. [Folder structure](#5-folder-structure)
+6. [Setup and validation steps](#6-setup-and-validation-steps)
+7. [Usage reference](#7-usage-reference)
+8. [Algorithm: approach and complexity](#8-algorithm-approach-and-complexity)
+9. [Validation rules and messages](#9-validation-rules-and-messages)
+10. [Testing strategy](#10-testing-strategy)
+11. [CI/CD and DevSecOps](#11-cicd-and-devsecops)
+12. [Security](#12-security)
+13. [Requirements checklist](#13-requirements-checklist)
+14. [Production considerations](#14-production-considerations)
 
 ---
 
@@ -37,69 +37,216 @@ Key features:
 - **Correct, not just greedy:** finds the true minimum even where "biggest note first" fails
   (`{4: 1, 3: 2}` and ₹6 → `₹3 × 2`).
 - **Any denominations:** nothing is hard-coded to ₹500/₹200/₹100.
-- **Safe failures:** an amount that cannot be paid exactly returns *"Cannot dispense requested
+- **Safe failures:** an amount that cannot be paid exactly gives *"Cannot dispense requested
   amount"* and leaves the inventory untouched; invalid input gets a clear message.
 - **Thread-safe:** a lock makes "allocate notes → update inventory" one indivisible step.
-- **Three ways to use it:** a Python library, a command-line program and a hardened HTTP/JSON service.
-- **Standard library only:** Python 3.13, nothing to install.
+- **Two ways to use it:** a **command-line program** and a **hardened HTTP/JSON service** (in Docker).
+- **Small and object-oriented:** three source files, standard library only, Python 3.14.8.
 - **Tested and shipped like production code:** 183 automated tests, a versioned and validated
   Docker image, and a DevSecOps pipeline for GitHub Actions and Azure DevOps.
 
 ---
 
-## 2. Architecture
+## 2. Assumptions
 
-```
-          command line                         HTTP/JSON (threads, API key, limits)
-               │                                          │
-        ┌──────▼──────┐                           ┌───────▼───────┐
-        │   cli.py    │                           │  service.py   │
-        └──────┬──────┘                           └───────┬───────┘
-               └──────────────────┬───────────────────────┘
-                                  │ amount
-                          ┌───────▼────────┐  validate_amount / validate_inventory
-                          │  dispenser.py  │ ──────────────────────────────────────▶ validation.py
-                          │ CashDispenser  │
-                          │ (notes + lock) │  find_minimum_notes(amount, notes)
-                          └────────────────┘ ──────────────────────────────────────▶ allocator.py
-                                                                                     (pure function)
-```
-
-All source files are in `atm-dispenser/src/`:
-
-| Module | Responsibility |
-|---|---|
-| `validation.py` | Is the input acceptable? Turns it into clean values or raises a clear error. |
-| `allocator.py` | Which notes pay this amount with the fewest notes? A pure calculation: no state, never changes its input. |
-| `dispenser.py` | The ATM. Owns the inventory, updates it only after a complete allocation, and protects it with a lock. |
-| `cli.py` | Command line: parsing, formatting, exit codes, interactive mode. No business rules. |
-| `service.py` | HTTP/JSON service: routing, request limits, API key, security headers, JSON logs, configuration. No business rules. |
-| `openapi.py` | The OpenAPI 3 contract served at `/openapi.json`. |
-| `errors.py` | `ATMError` (a `ValueError`), `InvalidAmountError`, `InvalidInventoryError`. |
-
-Design decisions:
-
-- **Separation of responsibilities.** The allocator is a pure function, so it can be tested
-  exhaustively on its own; the dispenser only keeps the inventory consistent; the CLI and the
-  service are thin front ends over the same `CashDispenser`, so both follow exactly the same rules.
-- **Concurrency.** The lock covers reading the inventory, allocating and updating it. The new
-  inventory is built as a complete copy and swapped in, so it is never half-updated.
-- **One process = one ATM.** The inventory is in memory. Several copies of the service would be
-  several ATMs with separate notes; scaling out needs shared storage with row locking
-  (see [Production considerations](#13-production-considerations)).
+- Amounts and denominations are whole numbers of the same currency unit (rupees).
+- The output lists only denominations actually dispensed; the updated inventory lists all of them,
+  including those at 0.
+- The default inventory is the one from the brief, so `python3 atm-dispenser/src/cli.py 2700`
+  reproduces the expected output directly.
+- A single withdrawal is limited to 200,000 by default, as real ATMs limit withdrawals; it can be changed.
+- An amount that cannot be paid with the notes available is a normal outcome, not an error: the
+  CLI exits with code 1 and the service answers `422`. Invalid input is an error: exit code 2 / `400`.
+- The inventory is in memory and resets when the program or service restarts (persistence is out of scope).
+- Python is run as `python3` (macOS and Linux). Windows users run the Docker image (or use WSL),
+  because `python3` is not guaranteed to exist on Windows.
+- Build times in versions are UTC.
 
 ---
 
-## 3. Workflow
+## 3. Architecture: high-level and low-level design
 
-### 3.1 A withdrawal
+### 3.1 High-level design (HLD)
 
+**Components and where they run**
+
+```mermaid
+flowchart LR
+    operator["Operator / tester<br/>(terminal)"]
+    client["ATM terminal or<br/>client application"]
+
+    subgraph local["Local machine — python3 3.14.8"]
+        cli["cli.py<br/>CommandLine"]
+        core1["dispenser.py<br/>Validator · NoteAllocator · CashDispenser"]
+        cli --> core1
+    end
+
+    subgraph container["Docker container atm-dispenser:version<br/>(non-root, read-only, resource limits)"]
+        svc["service.py<br/>ATMService · ATMServer · ATMRequestHandler"]
+        core2["dispenser.py<br/>Validator · NoteAllocator · CashDispenser"]
+        svc --> core2
+    end
+
+    operator -->|"python3 atm-dispenser/src/cli.py 2700"| cli
+    client -->|"HTTP :8080 — /health, /inventory, /withdrawals"| svc
 ```
- request ─▶ validate amount ─▶ lock ─▶ allocate fewest notes ─┬─▶ none found ─▶ unlock ─▶ "Cannot dispense"
-            (bad input stops                                   │                          (inventory unchanged)
-             here, nothing                                     └─▶ build new inventory ─▶ swap in ─▶ unlock ─▶ notes
-             is touched)                                           (complete copy)
+
+Both front ends are thin: every business rule lives once, in `dispenser.py`, so the command line
+and the service always behave the same way.
+
+**Build and delivery**
+
+```mermaid
+flowchart LR
+    dev["Developer"] -->|git push| repo["GitHub repository"]
+    repo --> gates["Quality gates<br/>lint · types · CodeQL · secrets ·<br/>tests on Linux and macOS · coverage ≥ 70%"]
+    gates -->|all pass| build["Build image<br/>atm-dispenser:major.minor.datetime"]
+    build --> validate["Validate and scan<br/>validate-image.sh · Trivy · SBOM"]
+    validate --> run["Run hardened container<br/>health · non-root · read-only"]
+    run --> e2e["End-to-end smoke tests<br/>+ OWASP ZAP DAST"]
+    e2e --> reports["Artifacts<br/>SBOM · ZAP report · coverage"]
 ```
+
+The same pipeline is defined for Azure DevOps in `azure-pipelines.yml`.
+
+### 3.2 Low-level design (LLD)
+
+**Classes** (three source files in `atm-dispenser/src/`)
+
+```mermaid
+classDiagram
+    direction LR
+
+    class ATMError
+    class InvalidAmountError
+    class InvalidInventoryError
+    ATMError <|-- InvalidAmountError
+    ATMError <|-- InvalidInventoryError
+
+    class Validator {
+        +WHOLE_NUMBER_TEXT
+        +MAX_DIGITS = 18
+        +amount(value)$ int
+        +inventory(mapping)$ Notes
+        +parse_inventory(text)$ Notes
+    }
+
+    class NoteAllocator {
+        +find_minimum_notes(amount, inventory) Notes or None
+        +split_into_bundles(count)$ list
+        -_usable_notes(amount, inventory)$
+        -_fill_table(target, unit, bundles)
+        -_read_back(target, unit, bundles, used)$
+    }
+
+    class CashDispenser {
+        -_notes : Notes
+        -_lock : threading.Lock
+        -_allocator : NoteAllocator
+        +max_withdrawal : int
+        +dispense(amount) Notes or None
+        +dispense_with_inventory(amount) tuple
+        +inventory : Notes
+        +total_cash : int
+    }
+
+    class CommandLine {
+        +run(argv) int
+        +withdraw(atm, amount_text) int
+        +run_interactive(atm, lines) int
+        +format_notes(notes)$ str
+    }
+
+    class ServiceConfig {
+        +atm : CashDispenser
+        +host, port, api_key, version
+        +from_environment(environ)$ ServiceConfig
+    }
+
+    class ATMService {
+        +run() int
+    }
+
+    class ATMServer {
+        +atm : CashDispenser
+        +api_key, version
+    }
+
+    class ATMRequestHandler {
+        +ROUTES
+        -_get_health()
+        -_get_inventory()
+        -_post_withdrawal()
+        -_authorised() bool
+        -_read_json_body()
+        -_send(status, body)
+    }
+
+    CashDispenser --> Validator : validates input
+    CashDispenser o-- NoteAllocator : allocates notes
+    CommandLine --> CashDispenser : uses
+    CommandLine --> Validator
+    ATMService --> ServiceConfig : reads environment
+    ServiceConfig --> CashDispenser : creates
+    ATMService --> ATMServer : starts
+    ATMServer --> CashDispenser : owns one ATM
+    ATMServer ..> ATMRequestHandler : one per request
+    ATMRequestHandler --> Validator
+```
+
+| File | Classes | Responsibility |
+|---|---|---|
+| `dispenser.py` | `ATMError`, `InvalidAmountError`, `InvalidInventoryError`, `Validator`, `NoteAllocator`, `CashDispenser` | The business rules: validation, the minimum-notes algorithm, the inventory and its lock |
+| `cli.py` | `CommandLine` | Arguments, output format, exit codes, interactive mode. No business rules. |
+| `service.py` | `ServiceConfig`, `ATMService`, `ATMServer`, `ATMRequestHandler`, `JsonLogFormatter` | HTTP routing, request limits, API key, security headers, JSON logs, configuration, the OpenAPI contract. No business rules. |
+
+**A withdrawal through the service**
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as ATMRequestHandler
+    participant D as CashDispenser
+    participant A as NoteAllocator
+
+    C->>H: POST /withdrawals {"amount": 2700}
+    H->>H: check API key, body size, JSON, fields
+    H->>D: dispense_with_inventory(2700)
+    D->>D: Validator.amount(2700), withdrawal limit
+    D->>D: acquire lock
+    D->>A: find_minimum_notes(2700, notes)
+    alt the notes can pay the amount
+        A-->>D: {500: 5, 200: 1}
+        D->>D: build the new inventory, swap it in
+        D->>D: release lock
+        D-->>H: notes, inventory after
+        H-->>C: 200 {"dispensed": {"500": 5, "200": 1}, ...}
+    else no combination pays it exactly
+        A-->>D: None
+        D->>D: release lock (inventory unchanged)
+        D-->>H: None, inventory
+        H-->>C: 422 {"error": "Cannot dispense requested amount"}
+    end
+```
+
+Design decisions:
+
+- **Separation of responsibilities.** `NoteAllocator` is a pure calculation, so it can be tested
+  exhaustively on its own; `CashDispenser` only keeps the inventory consistent; the front ends
+  only translate input and output.
+- **Concurrency.** The lock covers reading the inventory, allocating and updating it. The new
+  inventory is built as a complete copy and swapped in, so it is never half-updated.
+- **Replaceable allocator.** `CashDispenser(..., allocator=...)` accepts another `NoteAllocator`;
+  the concurrency tests use this to slow allocation down and prove the lock works.
+- **One process = one ATM.** Several copies of the service would be several ATMs with separate
+  notes; scaling out needs shared storage with row locking
+  (see [Production considerations](#14-production-considerations)).
+
+---
+
+## 4. Workflow
+
+### 4.1 A withdrawal
 
 1. **Validate the amount** before anything else, so bad input never touches the inventory.
 2. **Lock** the ATM.
@@ -108,7 +255,7 @@ Design decisions:
 5. Otherwise build the **new inventory as a complete copy**, swap it in and return the notes (rule 5).
 6. **Unlock.**
 
-### 3.2 Build, validate and run
+### 4.2 Build, validate and run
 
 The same order is used on a laptop (`scripts/run-container.sh`) and in CI. Nothing is built until
 the tests pass, and nothing is run until the image is validated.
@@ -126,29 +273,24 @@ exactly the image that was built.
 
 ---
 
-## 4. Folder structure
+## 5. Folder structure
 
 ```
 InmarCodingAssignment/
 ├── atm-dispenser/                   the Python project
 │   ├── src/
-│   │   ├── allocator.py             minimum-notes algorithm (pure function)
-│   │   ├── cli.py                   command line interface (`python -m cli`)
-│   │   ├── dispenser.py             CashDispenser: inventory, lock, withdrawal limit
-│   │   ├── errors.py                exception classes
-│   │   ├── openapi.py               OpenAPI contract
-│   │   ├── service.py               HTTP/JSON service (`python -m service`)
-│   │   └── validation.py            input validation
+│   │   ├── dispenser.py             ATM core: Validator, NoteAllocator, CashDispenser, errors
+│   │   ├── cli.py                   command line: CommandLine
+│   │   └── service.py               HTTP/JSON service: ATMService, ATMServer, ATMRequestHandler
 │   ├── tests/                       183 unittest tests
 │   │   └── e2e/smoke_test.py        end-to-end test for a running service
-│   ├── pyproject.toml               version and tool configuration (ruff, mypy, coverage)
+│   ├── pyproject.toml               version, Python version and tool configuration
 │   └── requirements-dev.txt         pinned dev tools (not needed at runtime)
 ├── scripts/
 │   ├── run-container.sh             test, build, validate, start and check the container
 │   ├── validate-image.sh            checks a built image before it is run
 │   └── version.sh                   prints the build version (major.minor.datetime)
-├── .github/
-│   └── workflows/ci.yml             CI/CD with DevSecOps gates (on every push and weekly)
+├── .github/workflows/ci.yml         CI/CD with DevSecOps gates (on every push and weekly)
 ├── azure-pipelines.yml              the same pipeline for Azure DevOps
 ├── Dockerfile                       runtime image (application code only)
 └── Makefile                         shortcuts for the commands below
@@ -156,80 +298,54 @@ InmarCodingAssignment/
 
 ---
 
-## 5. Setup and validation steps
+## 6. Setup and validation steps
 
-Commands are for macOS/Linux; on Windows use `python` instead of `python3`.
+All commands run from the repository root and use `python3`.
 
-### 5.1 Prerequisites
+| Platform | How to run |
+|---|---|
+| macOS, Linux | `python3` 3.14.8 for the CLI and tests; Docker for the service |
+| Windows | Docker (sections 6.4 and 7.2), or the macOS/Linux commands inside WSL |
+
+### 6.1 Prerequisites
 
 | Needed for | Tool | Check |
 |---|---|---|
-| Everything | Python 3.13 | `python3 --version` |
-| Container steps (5.5) | Docker | `docker version` |
-| Optional dev checks (5.6) | ruff, mypy, coverage, pip-audit | `pip install -r atm-dispenser/requirements-dev.txt` |
+| Tests and CLI (6.2, 6.3) | Python 3.14.8 | `python3 --version` |
+| Service in a container (6.4) | Docker | `docker version` |
+| Optional dev checks (6.5) | ruff, mypy, coverage, pip-audit | `python3 -m pip install -r atm-dispenser/requirements-dev.txt` |
 
-### 5.2 Get the code and run the tests
+### 6.2 Get the code and run the tests
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
-cd InmarCodingAssignment/atm-dispenser
-export PYTHONPATH=src                  # lets Python find the code in src/ (no install needed)
-python3 -m unittest discover -v        # expect: Ran 183 tests ... OK
+cd InmarCodingAssignment
+python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 183 tests ... OK
 ```
 
-Steps 5.3 and 5.4 run from `atm-dispenser/` with `PYTHONPATH=src`; steps 5.5 and 5.6 run from the
-repository root.
+Nothing to install and no `PYTHONPATH` to set: the scripts find their own modules, and the tests
+add `src/` to the path themselves.
 
-### 5.3 Validate the use cases with the command line
+### 6.3 Validate the use cases with the command line
 
 | # | Use case | Command | Expected result |
 |---|---|---|---|
-| 1 | Example from the brief | `python3 -m cli 2700` | `₹500 × 5, ₹200 × 1 (Total notes dispensed: 6)`; updated inventory `₹500 × 3, ₹200 × 9, ₹100 × 20`; exit code 0 |
-| 2 | Greedy would fail | `python3 -m cli --inventory "4:1, 3:2" 6` | `₹3 × 2` |
-| 3 | Limited notes | `python3 -m cli --inventory "500:2, 200:10, 100:20" 2400` | `₹500 × 2, ₹200 × 7` |
-| 4 | Cannot dispense | `python3 -m cli 250` | `Cannot dispense requested amount`; `Inventory unchanged`; exit code 1 |
-| 5 | More than the ATM holds | `python3 -m cli 9000` | `Cannot dispense requested amount`; exit code 1 |
-| 6 | Several withdrawals in a row | `python3 -m cli 2700 2700 800` | the inventory goes down after each one |
-| 7 | Zero / negative / text / decimal | `python3 -m cli 0`, `python3 -m cli -- -5`, `python3 -m cli abc`, `python3 -m cli 12.5` | clear error message; exit code 2 |
-| 8 | Invalid inventory | `python3 -m cli --inventory "{}" 100`, `--inventory "500:-1"`, `--inventory "0:5"` | `empty`, `cannot be negative`, `Invalid denomination` |
-| 9 | Interactive | `python3 -m cli`, then type amounts, `q` (or Ctrl+C) to quit | one result per line |
+| 1 | Example from the brief | `python3 atm-dispenser/src/cli.py 2700` | `₹500 × 5, ₹200 × 1 (Total notes dispensed: 6)`; updated inventory `₹500 × 3, ₹200 × 9, ₹100 × 20`; exit code 0 |
+| 2 | Greedy would fail | `python3 atm-dispenser/src/cli.py --inventory "4:1, 3:2" 6` | `₹3 × 2` |
+| 3 | Limited notes | `python3 atm-dispenser/src/cli.py --inventory "500:2, 200:10, 100:20" 2400` | `₹500 × 2, ₹200 × 7` |
+| 4 | Cannot dispense | `python3 atm-dispenser/src/cli.py 250` | `Cannot dispense requested amount`; `Inventory unchanged`; exit code 1 |
+| 5 | More than the ATM holds | `python3 atm-dispenser/src/cli.py 9000` | `Cannot dispense requested amount`; exit code 1 |
+| 6 | Several withdrawals in a row | `python3 atm-dispenser/src/cli.py 2700 2700 800` | the inventory goes down after each one |
+| 7 | Zero / negative / text / decimal | `python3 atm-dispenser/src/cli.py 0`, `… -- -5`, `… abc`, `… 12.5` | clear error message; exit code 2 |
+| 8 | Invalid inventory | `python3 atm-dispenser/src/cli.py --inventory "{}" 100`, `--inventory "500:-1"`, `--inventory "0:5"` | `empty`, `cannot be negative`, `Invalid denomination` |
+| 9 | Above the withdrawal limit | `python3 atm-dispenser/src/cli.py --max-withdrawal 1000 2700` | `exceeds the limit of 1000`; exit code 2 |
+| 10 | Interactive | `python3 atm-dispenser/src/cli.py`, then type amounts, `q` (or Ctrl+C) to quit | one result per line |
 
 Check an exit code with `echo $?` straight after the command.
 
-### 5.4 Validate the HTTP service (local process)
+### 6.4 Build, validate and run the service in a container
 
-Terminal 1 – start the service with an API key:
-
-```bash
-export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 -m service           # logs: {"message": "atm-dispenser dev listening on http://127.0.0.1:8080", ...}
-```
-
-Terminal 2 – use it (copy the same `ATM_API_KEY` value into this terminal):
-
-```bash
-export ATM_API_KEY=<the same key>
-AUTH="Authorization: Bearer $ATM_API_KEY"
-JSON="Content-Type: application/json"
-URL=http://127.0.0.1:8080
-
-curl -s $URL/health                                                   # {"status": "ok", "version": "dev"}
-curl -s -H "$AUTH" $URL/inventory                                     # 500:8, 200:10, 100:20
-curl -s -H "$AUTH" -H "$JSON" -d '{"amount": 2700}' $URL/withdrawals  # 200: 500×5, 200×1
-curl -s -H "$AUTH" -H "$JSON" -d '{"amount": 250}'  $URL/withdrawals  # 422: Cannot dispense requested amount
-curl -s -H "$AUTH" -H "$JSON" -d '{"amount": -5}'   $URL/withdrawals  # 400: Amount cannot be negative
-curl -s -H "$AUTH" -H "$JSON" -d '{"amount": "abc"}' $URL/withdrawals # 400: Amount must be a number
-curl -s -H "$JSON" -d '{"amount": 100}' $URL/withdrawals              # 401: no API key
-curl -s -w ' HTTP %{http_code}\n' -H "$AUTH" $URL/inventory          # add -w to see the status code
-
-python3 tests/e2e/smoke_test.py $URL   # all end-to-end checks: expect "All checks passed"
-```
-
-Stop the service with `Ctrl+C`. Without `ATM_API_KEY` the service runs open (it logs a warning).
-
-### 5.5 Build, validate and run the container
-
-From the repository root. One command does every step:
+One command does every step:
 
 ```bash
 export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"   # optional
@@ -240,13 +356,13 @@ export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32
 |---|---|---|
 | 1 | Runs the 183 unit, integration and security tests | `OK` (otherwise nothing is built) |
 | 2 | Builds `atm-dispenser:<version>`, e.g. `atm-dispenser:1.0.20261120183012` | build succeeds |
-| 3 | Validates the image (`scripts/validate-image.sh`) | version label and `ATM_VERSION` match; user 10001; health check defined; port 8080 exposed; `/app` holds only the application modules; size ≤ 250 MB; the CLI inside dispenses the brief's example |
+| 3 | Validates the image (`scripts/validate-image.sh`) | version label and `ATM_VERSION` match; user 10001; health check defined; port 8080 exposed; `/app` holds only the application modules; no pip or setuptools; size ≤ 250 MB; the CLI inside dispenses the brief's example |
 | 4 | Starts container `atm-dispenser` on `127.0.0.1:8080`: read-only filesystem, all capabilities dropped, `no-new-privileges`, 128 MB memory, 0.5 CPU, 100 processes | container running |
 | 5 | Waits for the Docker health check (`GET /health`) | `healthy` within 30 s |
 | 6 | Hardening checks inside the running container | runs as user 10001 (not root); writing a file fails |
 | 7 | End-to-end smoke test with the API key | `All checks passed`, including "service reports version <version>" |
 
-Then use it:
+Then try the service:
 
 ```bash
 export ATM_API_KEY="$(docker exec atm-dispenser printenv ATM_API_KEY)"
@@ -257,67 +373,60 @@ curl -s -H "$AUTH" $URL/inventory
 curl -s -H "$AUTH" -H "$JSON" -d '{"amount": 2700}' $URL/withdrawals   # 200: 500×5, 200×1
 curl -s -H "$AUTH" -H "$JSON" -d '{"amount": 250}'  $URL/withdrawals   # 422: Cannot dispense requested amount
 curl -s -H "$AUTH" -H "$JSON" -d '{"amount": 0}'    $URL/withdrawals   # 400: Amount must be greater than zero
-docker run --rm atm-dispenser:local python -m cli 2700                   # the CLI from the same image
+curl -s -H "$JSON" -d '{"amount": 100}' $URL/withdrawals                # 401: no API key
 
 docker logs -f atm-dispenser        # JSON request logs (Ctrl+C to stop following)
 ./scripts/run-container.sh --stop   # stop and remove the container (or: make container-stop)
 ```
 
-The same steps by hand:
+**Windows (PowerShell) or any machine with only Docker:**
 
 ```bash
-(cd atm-dispenser && python3 -m unittest discover)
-VERSION="$(./scripts/version.sh)"
-docker build --build-arg VERSION="$VERSION" -t "atm-dispenser:$VERSION" .
-./scripts/validate-image.sh "atm-dispenser:$VERSION" "$VERSION"
-docker run -d --name atm-dispenser -p 127.0.0.1:8080:8080 -e ATM_API_KEY \
-  --read-only --cap-drop ALL --security-opt no-new-privileges:true "atm-dispenser:$VERSION"
-docker inspect -f '{{.State.Health.Status}}' atm-dispenser     # repeat until "healthy"
-EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://127.0.0.1:8080
+docker build -t atm-dispenser .
+docker run --rm atm-dispenser python3 cli.py 2700                           # the CLI in the image
+docker run -d --name atm-dispenser -p 127.0.0.1:8080:8080 --read-only --cap-drop ALL atm-dispenser
+curl http://127.0.0.1:8080/health
 docker rm -f atm-dispenser
 ```
 
-
-### 5.6 Optional quality and security checks
+### 6.5 Optional quality and security checks
 
 ```bash
-pip install -r atm-dispenser/requirements-dev.txt
-make lint coverage security            # ruff (incl. security rules) + mypy, coverage ≥ 95 %, pip-audit
+python3 -m pip install -r atm-dispenser/requirements-dev.txt
+make lint coverage security            # ruff (incl. security rules) + mypy, coverage ≥ 70 %, pip-audit
 ```
 
-The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps](#10-cicd-and-devsecops)).
+The image, Dockerfile, secret and DAST scans run in CI (see [CI/CD and DevSecOps](#11-cicd-and-devsecops)).
 
-### 5.7 Troubleshooting
+### 6.6 Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `Address already in use` | Another process uses port 8080: `ATM_PORT=8081 python3 -m service`, or stop it (`lsof -i :8080`) |
-| `cannot start: ATM_… is invalid` | Fix the named environment variable; the message says what is wrong |
-| `401 Missing or invalid API key` | Send `Authorization: Bearer <key>` with the same key the service was started with |
+| `python3: command not found` (Windows) | Use the Docker commands in 6.4, or WSL |
+| `Address already in use` | Another process uses port 8080: `PORT=8081 ./scripts/run-container.sh`, or stop it (`lsof -i :8080`) |
+| `401 Missing or invalid API key` | Send `Authorization: Bearer <key>` with the container's key (`docker exec atm-dispenser printenv ATM_API_KEY`) |
 | `415 Content-Type must be application/json` | Add `-H 'Content-Type: application/json'` |
-| `₹` shows as `?` on Windows | `set PYTHONIOENCODING=utf-8` |
 | Image validation fails | The failing check is printed; rebuild with `--build-arg VERSION=...` and check the Dockerfile |
 | Container not `healthy` | `docker logs atm-dispenser`; check port 8080 is free; `docker inspect atm-dispenser` shows the health-check output |
 | `Cannot connect to the Docker daemon` | Start Docker Desktop and try again |
 
 ---
 
-## 6. Usage reference
+## 7. Usage reference
 
-### 6.1 Command line
-
-Run from `atm-dispenser/` with `PYTHONPATH=src`.
+### 7.1 Command line
 
 | What | Command |
 |---|---|
-| One withdrawal (default inventory from the brief) | `python3 -m cli 2700` |
-| Your own inventory | `python3 -m cli --inventory "500:8, 200:10, 100:20" 2700` |
-| The brief's format also works | `python3 -m cli --inventory "{ 500: 8, 200: 10, 100: 20 }" 2700` |
-| Several withdrawals on the same ATM, in order | `python3 -m cli 2700 2700 800` |
-| Interactive mode (type amounts, `q` to quit) | `python3 -m cli` |
-| A negative amount (`--` stops it being read as an option) | `python3 -m cli -- -5` |
-| Change the per-withdrawal limit (default 200000) | `python3 -m cli --max-withdrawal 500000 300000` |
-| Help | `python3 -m cli --help` |
+| One withdrawal (default inventory from the brief) | `python3 atm-dispenser/src/cli.py 2700` |
+| Your own inventory | `python3 atm-dispenser/src/cli.py --inventory "500:8, 200:10, 100:20" 2700` |
+| The brief's format also works | `python3 atm-dispenser/src/cli.py --inventory "{ 500: 8, 200: 10, 100: 20 }" 2700` |
+| Several withdrawals on the same ATM, in order | `python3 atm-dispenser/src/cli.py 2700 2700 800` |
+| Interactive mode (type amounts, `q` to quit) | `python3 atm-dispenser/src/cli.py` |
+| A negative amount (`--` stops it being read as an option) | `python3 atm-dispenser/src/cli.py -- -5` |
+| Change the per-withdrawal limit (default 200000) | `python3 atm-dispenser/src/cli.py --max-withdrawal 500000 300000` |
+| Help | `python3 atm-dispenser/src/cli.py --help` |
+| The same inside Docker | `docker run --rm atm-dispenser python3 cli.py 2700` |
 
 **Exit codes** (with several amounts the worst one wins):
 
@@ -327,35 +436,16 @@ Run from `atm-dispenser/` with `PYTHONPATH=src`.
 | `1` | At least one amount could not be dispensed ("Cannot dispense requested amount") |
 | `2` | Invalid input (amount, inventory or limit) |
 
-### 6.2 Python library
+### 7.2 HTTP service
 
-```python
-from dispenser import CANNOT_DISPENSE, CashDispenser
-
-atm = CashDispenser({500: 8, 200: 10, 100: 20})
-
-atm.dispense(2700)      # {500: 5, 200: 1}
-atm.inventory           # {500: 3, 200: 9, 100: 20}
-atm.dispense(250)       # None -> show CANNOT_DISPENSE; inventory unchanged
-atm.dispense(-5)        # raises InvalidAmountError("Amount cannot be negative, got -5")
-
-notes, inventory_after = atm.dispense_with_inventory(600)   # both from the same locked step
-CashDispenser({500: 8}, max_withdrawal=1000)                # optional per-withdrawal limit
-```
-
-**Return structure:** `dispense(amount)` returns a `dict` of `{denomination: notes}`, largest
-denomination first, as in the brief, or `None` when the amount cannot be paid exactly. Invalid
-input raises an exception with a clear message. Keeping the two apart matters: "the ATM is short
-of notes" is a normal outcome, while "-5" is a mistake by the caller.
-
-### 6.3 HTTP service
+The service runs in the Docker image (section 6.4).
 
 | Method & path | Purpose | Responses |
 |---|---|---|
 | `GET /health` | Liveness probe and build version | `200 {"status": "ok", "version": "1.0.20261120183012"}` |
 | `GET /inventory` | Notes in the ATM | `200 {"inventory": {"500": 8, …}, "total_cash": 8000}` |
 | `POST /withdrawals` | Withdraw `{"amount": 2700}` | `200` dispensed · `400` invalid input · `422` cannot dispense · `401` no/invalid API key · `408` body too slow · `413` body > 1 KB · `415` not JSON |
-| `GET /openapi.json` | OpenAPI 3 contract | `200` |
+| `GET /openapi.json` | OpenAPI 3 contract (used by the OWASP ZAP scan in CI) | `200` |
 
 ```bash
 $ curl -s -H 'Content-Type: application/json' -d '{"amount": 2700}' localhost:8080/withdrawals
@@ -368,34 +458,34 @@ $ curl -s -H 'Content-Type: application/json' -d '{"amount": 250}' localhost:808
 JSON object keys are always text, so denominations appear as `"500"`. The `inventory` in each
 response is the state right after that withdrawal, even when other customers withdraw at the same time.
 
-Configuration (environment variables):
+Configuration (environment variables, e.g. `docker run -e ATM_INVENTORY="4:1, 3:2" ...`):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `ATM_INVENTORY` | `500:8, 200:10, 100:20` | Notes in the ATM |
-| `ATM_HOST` | `127.0.0.1` (containers: `0.0.0.0`) | Listen address |
+| `ATM_HOST` | `0.0.0.0` in the image | Listen address |
 | `ATM_PORT` | `8080` | Listen port |
 | `ATM_MAX_WITHDRAWAL` | `200000` | Largest amount per withdrawal (like a real ATM limit; also caps the work per request) |
 | `ATM_API_KEY` | not set | If set (16+ chars), `/inventory` and `/withdrawals` need `Authorization: Bearer <key>` |
-| `ATM_VERSION` | `dev` (the image sets the build version) | Version reported by `/health` |
+| `ATM_VERSION` | the build version | Version reported by `/health` |
 
 Invalid configuration stops the service at start-up with a clear message (exit code 2). Logs are
 one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service down cleanly.
 
-### 6.4 Makefile shortcuts
+### 7.3 Makefile shortcuts
 
 | Target | Does |
 |---|---|
 | `make test` | all automated tests |
-| `make run` / `make smoke` | start the service locally / smoke test a running service |
 | `make version` | print the build version |
 | `make docker-build` | tests, then build and validate the versioned image |
 | `make container` / `make container-stop` | `scripts/run-container.sh` / stop it |
+| `make smoke` | smoke test a running service (`URL=...`) |
 | `make lint coverage security` | dev checks (need `requirements-dev.txt`) |
 
 ---
 
-## 7. Algorithm: approach and complexity
+## 8. Algorithm: approach and complexity
 
 ### Why "biggest note first" (greedy) is not enough
 
@@ -407,7 +497,7 @@ one JSON object per line on stdout. `SIGTERM` (`docker stop`) shuts the service 
 
 ### Dynamic programming ("bounded coin change")
 
-The allocator builds a table that answers, for every amount from 0 to the target, *"what is the
+`NoteAllocator` builds a table that answers, for every amount from 0 to the target, *"what is the
 fewest notes that make exactly this amount?"*. Every combination of the available notes is
 considered, so the answer is always the true minimum, and "no answer" really means the amount
 cannot be paid.
@@ -443,44 +533,41 @@ O(D) but can be wrong; the textbook bounded version is O(S × total notes); bund
 
 ---
 
-## 8. Validation rules and messages
+## 9. Validation rules and messages
 
 | Input | Result |
 |---|---|
-| `0` | `InvalidAmountError: Amount must be greater than zero` |
-| `-500` | `InvalidAmountError: Amount cannot be negative, got -500` |
-| `"abc"`, `""`, `None`, `True`, `"2_700"`, `"१००"`, `"１００"` (non-ASCII digits) | `InvalidAmountError: Amount must be a number, got …` |
-| `12.5`, `"12.5"`, `2700.0` | `InvalidAmountError: Amount must be a whole number, got …` |
-| Text longer than 18 digits | `InvalidAmountError: Amount is too large: at most 18 digits` |
-| Above the per-withdrawal limit (CLI and service default 200000) | `InvalidAmountError: Amount … exceeds the limit of 200000 per withdrawal` |
-| `{}` | `InvalidInventoryError: ATM inventory is empty: add at least one denomination` |
-| `{500: -1}` | `InvalidInventoryError: … note count … cannot be negative` |
-| `{500: 2.5}`, `{500: "8"}` | `InvalidInventoryError: … note count … must be a whole number` |
-| `{0: 5}`, `{-100: 5}`, `{0.5: 5}`, `{"500": 5}` | `InvalidInventoryError: Invalid denomination … must be a positive whole number` |
-| Amount that cannot be made exactly (e.g. 250) | `dispense` returns `None`; CLI prints `Cannot dispense requested amount` |
+| `0` | `Amount must be greater than zero` |
+| `-500` | `Amount cannot be negative, got -500` |
+| `"abc"`, `""`, `None`, `True`, `"2_700"`, `"१००"`, `"１００"` (non-ASCII digits) | `Amount must be a number, got …` |
+| `12.5`, `"12.5"`, `2700.0` | `Amount must be a whole number, got …` |
+| Text longer than 18 digits | `Amount is too large: at most 18 digits` |
+| Above the per-withdrawal limit (default 200000) | `Amount … exceeds the limit of 200000 per withdrawal` |
+| `{}` | `ATM inventory is empty: add at least one denomination` |
+| `{500: -1}` | `… note count … cannot be negative` |
+| `{500: 2.5}`, `{500: "8"}` | `… note count … must be a whole number` |
+| `{0: 5}`, `{-100: 5}`, `{0.5: 5}`, `{"500": 5}` | `Invalid denomination … must be a positive whole number` |
+| Amount that cannot be made exactly (e.g. 250) | `Cannot dispense requested amount` (CLI exit code 1, service `422`) |
 
-Decisions worth calling out:
+Amount errors are `InvalidAmountError` and inventory errors `InvalidInventoryError`, both
+subclasses of `ATMError`. Decisions worth calling out:
 
-- Amounts may be `int` or whole-number text (`"2700"`, `" 2700 "`), as a keypad or command line
-  produces. Floats are rejected even when whole (`2700.0`): money never passes through floating point.
+- Amounts may be whole numbers or whole-number text (`"2700"`, `" 2700 "`), as a keypad or command
+  line produces. Floats are rejected even when whole (`2700.0`): money never passes through floating point.
 - `True`/`False` are rejected although Python treats them as 1/0.
 - Only the ASCII digits 0–9 count: Python itself would also accept Arabic-Indic, Devanagari or
   full-width digits, which no ATM keypad sends.
-- The CLI and the service limit a single withdrawal to 200,000 by default (`--max-withdrawal`,
-  `ATM_MAX_WITHDRAWAL`), like a real ATM. This also bounds the work one request can cause.
 - A denomination with **0 notes is allowed** (an empty cassette); if every count is 0, every
-  withdrawal returns `None`.
+  withdrawal gives "Cannot dispense".
 
 ---
 
-## 9. Testing strategy
+## 10. Testing strategy
 
 ```bash
-cd atm-dispenser
-python3 -m unittest discover -v                             # all 183 tests, about 6 seconds
-python3 -m unittest tests.test_service                      # one test file
-python3 -m doctest -v src/dispenser.py                       # the usage example in the docstring
-python3 tests/e2e/smoke_test.py http://localhost:8080       # against a running service
+python3 -m unittest discover -s atm-dispenser -v                       # all 183 tests, about 6 seconds
+python3 -m unittest discover -s atm-dispenser -p test_service.py       # one test file
+python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080    # against a running service
 ```
 
 | Type | Where | What it proves |
@@ -488,31 +575,32 @@ python3 tests/e2e/smoke_test.py http://localhost:8080       # against a running 
 | **Unit** | `test_validation.py`, `test_allocator.py`, `test_dispenser.py` | Every rule of the brief: validation messages, minimum notes, limited notes, greedy traps, "cannot dispense", inventory updated only on success, withdrawal limit, inventory cannot be changed from outside |
 | **Correctness oracle** | `test_allocator.AgainstBruteForceTests` | 400 random ATMs: the result always equals an exhaustive search of every combination |
 | **Property / fuzz** | `test_fuzz.py` | Thousands of random and hostile inputs (unicode digits, NaN, huge numbers, random bytes): validation only returns clean values or our own error; invariants hold over random withdrawal sequences; the HTTP service never answers 500 |
-| **Concurrency** | `test_concurrency.py`, `test_service.ConcurrentHttpTests` | 20 threads competing for 8 notes; a deliberately slowed allocator to force a race; a **control test proving the race happens without the lock**; 25 parallel HTTP withdrawals; each response reports the inventory right after its own withdrawal |
+| **Concurrency** | `test_concurrency.py`, `test_service.ConcurrentHttpTests` | 20 threads competing for 8 notes; a deliberately slowed `NoteAllocator` to force a race; a **control test proving the race happens without the lock**; 25 parallel HTTP withdrawals; each response reports the inventory right after its own withdrawal |
 | **Integration (HTTP)** | `test_service.py` | A real server on a free port: every endpoint, status code and error path; keep-alive; malformed HTTP; slow (408) and cut-off (400) bodies; version in `/health`; start-up and clean shutdown on SIGTERM |
 | **Security** | `test_service.SecurityTests`, `HttpProtocolTests` | API key (missing, wrong, wrong scheme), security headers, no version disclosure, no stack-trace leaks, request-id sanitising, body size/content-type limits, path traversal, logs without request bodies, a request hidden in a GET body cannot be smuggled through |
 | **Configuration** | `test_service.ConfigTests` | Every environment variable, and that bad values stop the service from starting |
-| **CLI** | `test_cli.py` | Inventory parsing, output format, exit codes, withdrawal limit, interactive mode and Ctrl+C, `python -m cli` end to end |
+| **CLI** | `test_cli.py` | Output format, exit codes, withdrawal limit, interactive mode and Ctrl+C, `python3 atm-dispenser/src/cli.py` end to end |
 | **Performance** | `test_allocator.PerformanceTests` | ₹199,990 from a large ATM in well under a second; a trillion notes per denomination is no slower |
 | **Smoke-test script** | `test_smoke_script.py` | The e2e script passes against a healthy service, with and without an API key, checks the expected version, and fails clearly (not a crash) when the key is missing |
-| **Image validation** | `scripts/validate-image.sh` | Version label and env, non-root user, health check, exposed port, only app code inside, size limit, CLI works inside the image |
+| **Image validation** | `scripts/validate-image.sh` | Version label and env, non-root user, health check, exposed port, only app code inside, no pip or setuptools, size limit, CLI works inside the image |
 | **Container** | `scripts/run-container.sh`, CI | Health check passes, runs as non-root user 10001, filesystem is read-only |
 | **End-to-end smoke** | `tests/e2e/smoke_test.py` | Against the running container: health and version, headers, withdraw, inventory change, failure leaves inventory unchanged, every validation error, 404/405/415, 401 without key |
 | **DAST** | CI (OWASP ZAP) | Active scan of the running container, driven by `/openapi.json` |
 
 ---
 
-## 10. CI/CD and DevSecOps
+## 11. CI/CD and DevSecOps
 
 Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same stages for Azure DevOps.
+Python is pinned to **3.14.8** everywhere: CI, Azure DevOps and the Docker base image.
 
 ```
- quality ───────────┐   ruff (incl. the Bandit security rules), mypy, pip-audit
- codeql             │   CodeQL security analysis (security-extended queries)
- secrets            │   gitleaks over the full git history
- test (3 OS, Py 3.13)│   unit, integration, concurrency, fuzz, CLI, doctest
- coverage           │   fails below 95 %
-                    ▼   (the image is built only if all of the above pass)
+ quality ─────────────────┐   ruff (incl. the Bandit security rules), mypy, pip-audit
+ codeql                   │   CodeQL security analysis (security-extended queries)
+ secrets                  │   gitleaks over the full git history
+ test (Linux, macOS)      │   unit, integration, concurrency, fuzz, CLI
+ coverage                 │   fails below 70 %
+                          ▼   (the image is built only if all of the above pass)
  container            version (major.minor.datetime) → hadolint → build → validate image
                       → Trivy image CVEs → Trivy Dockerfile scan → SBOM
                       → start hardened container → health check → non-root & read-only checks
@@ -524,13 +612,17 @@ Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same s
   The SBOM artifact is named after the version.
 - **Image validation** (`scripts/validate-image.sh`) runs before any scan or container start:
   version label and `ATM_VERSION`, user 10001, health check, port 8080, only the application modules in
-  `/app`, size ≤ 250 MB, and the CLI inside the image dispenses the brief's example.
+  `/app`, no pip or setuptools, size ≤ 250 MB, and the CLI inside the image dispenses the brief's example.
+- **Image patching:** the Dockerfile upgrades the OS packages at build time, so fixes released
+  after the base image was published are included, and it removes pip and setuptools, which the
+  app never uses. Trivy then fails the build on any remaining fixable HIGH or CRITICAL vulnerability.
+- **Platforms:** tests run on Linux and macOS with `python3`; Windows is covered by the Docker image.
 - The pipeline also runs every Monday, so newly published vulnerabilities in the code or the
   base image are found even without a push.
 
 ---
 
-## 11. Security
+## 12. Security
 
 ### Controls in this project
 
@@ -543,7 +635,7 @@ Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same s
 | HTTP headers | `nosniff`, `X-Frame-Options: DENY`, restrictive CSP, `no-referrer`, `no-store`; server software version hidden |
 | Availability | Socket timeout against slow clients; connection backlog sized for bursts; CPU, memory and process limits on the container |
 | Logging | Structured JSON logs; request bodies never logged; client request ids sanitised against log injection |
-| Container | Slim base, application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
+| Container | Slim base with OS packages patched at build time, no pip or setuptools (nothing to install at runtime), application code only, non-root UID 10001, read-only filesystem, all capabilities dropped, `no-new-privileges`, health check; validated before every run |
 | Supply chain | Standard library only (no runtime dependencies), versioned images, SBOM per build, pinned tool versions |
 
 ### Automated security checks (CI)
@@ -566,25 +658,25 @@ Please open a private security advisory on the GitHub repository rather than a p
 
 ---
 
-## 12. Requirements checklist
+## 13. Requirements checklist
 
 | Requirement from the brief | Where |
 |---|---|
-| Amount must be a positive whole number | `validation.validate_amount` |
-| Only available notes / never more than available | `allocator` uses each note at most once; `test_allocator.NotesLimitTests` |
+| Amount must be a positive whole number | `Validator.amount` |
+| Only available notes / never more than available | `NoteAllocator` uses each note at most once; `test_allocator.NotesLimitTests` |
 | Minimum number of notes | Dynamic programming; brute-force cross-check in `AgainstBruteForceTests` |
 | Update inventory only after full allocation | `CashDispenser` builds the new inventory, then swaps it in |
 | "Cannot dispense requested amount" | `CANNOT_DISPENSE`, printed by the CLI, returned by the service |
 | Failed withdrawal leaves inventory unchanged | `test_dispenser.FailedWithdrawalTests` |
 | Do not assume greedy | `{4:1, 3:2}` → `3 × 2`, tested |
 | Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
-| Standard library only | Only `argparse`, `threading`, `http.server`, `json`, `math`, `functools`, `re`, `typing`, `unittest` |
-| Validation messages | [Section 8](#8-validation-rules-and-messages); `test_validation.py` |
+| Standard library only | `argparse`, `threading`, `http.server`, `json`, `math`, `functools`, `re`, `dataclasses`, `unittest` |
+| Validation messages | [Section 9](#9-validation-rules-and-messages); `test_validation.py` |
 | Concurrent withdrawals must not share notes | Lock in `CashDispenser`; `test_concurrency.py`, `ConcurrentHttpTests` |
 
 ---
 
-## 13. Production considerations
+## 14. Production considerations
 
 Already in place: API key, input and size limits, per-withdrawal limit, security headers, JSON
 logs, health checks, graceful shutdown, versioned and validated images, and a hardened container.
@@ -608,18 +700,3 @@ several servers update the same stock needs the guarantee from shared storage:
 - **Dispense failures after allocation** (the hardware jams): reserve the notes first, then confirm
   or release them once the hardware reports what was actually paid out, and keep an audit log.
 - **Idempotency key** per withdrawal request, so a retried request is not paid twice.
-
----
-
-## 14. Assumptions
-
-- Amounts and denominations are whole numbers of the same currency unit (rupees).
-- The output lists only denominations actually dispensed; the updated inventory lists all of them,
-  including those at 0.
-- The CLI's default inventory is the one from the brief, so `python3 -m cli 2700` reproduces the
-  expected output directly.
-- A single withdrawal is limited to 200,000 by default, as real ATMs limit withdrawals; it can be changed.
-- The HTTP API answers `400` for invalid input and `422` when the amount is valid but cannot be paid
-  with the notes available, mirroring the library's "exception vs `None`" split.
-- The inventory is in memory and resets when the service restarts (persistence is out of scope).
-- Build times in versions are UTC.

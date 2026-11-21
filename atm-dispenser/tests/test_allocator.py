@@ -5,7 +5,9 @@ import random
 import time
 import unittest
 
-from allocator import find_minimum_notes
+from dispenser import NoteAllocator
+
+find_minimum_notes = NoteAllocator().find_minimum_notes
 
 
 def paid(notes):
@@ -17,7 +19,7 @@ def cheapest_by_trying_everything(amount, inventory):
     denominations = list(inventory)
     best = None
     for counts in itertools.product(*(range(inventory[d] + 1) for d in denominations)):
-        pays_exactly = sum(d * c for d, c in zip(denominations, counts)) == amount
+        pays_exactly = sum(d * c for d, c in zip(denominations, counts, strict=True)) == amount
         if pays_exactly and (best is None or sum(counts) < best):
             best = sum(counts)
     return best

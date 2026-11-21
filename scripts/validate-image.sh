@@ -42,7 +42,7 @@ else
 fi
 
 # 3. Contents: only the application modules, no tests, folders or build files
-contents="$(docker run --rm --entrypoint python "${IMAGE}" -c "import os; print(' '.join(sorted(os.listdir('/app'))))")"
+contents="$(docker run --rm --entrypoint python3 "${IMAGE}" -c "import os; print(' '.join(sorted(os.listdir('/app'))))")"
 unexpected="$(tr ' ' '\n' <<< "${contents}" | grep -vE '^[a-z_]+\.py$' | grep -v '^$' || true)"
 if [[ -z "${unexpected}" && "${contents}" != *test* && "${contents}" == *service.py* ]]; then
   pass "/app contains only the application modules"
@@ -54,8 +54,16 @@ fi
 size_mb=$(( $(inspect '{{.Size}}') / 1024 / 1024 ))
 if (( size_mb <= MAX_SIZE_MB )); then pass "size ${size_mb} MB (limit ${MAX_SIZE_MB} MB)"; else fail "size ${size_mb} MB is over ${MAX_SIZE_MB} MB"; fi
 
-# 5. The code in the image works
-if docker run --rm "${IMAGE}" python -m cli 2700 | grep -q "Total notes dispensed: 6"; then
+# 5. No packaging tools (pip, setuptools) that the app does not need
+if docker run --rm --entrypoint python3 "${IMAGE}" -c \
+    "import importlib.util, sys; sys.exit(any(importlib.util.find_spec(m) for m in ('pip', 'setuptools', 'ensurepip')))"; then
+  pass "no pip, setuptools or ensurepip in the image"
+else
+  fail "pip, setuptools or ensurepip is still in the image"
+fi
+
+# 6. The code in the image works
+if docker run --rm "${IMAGE}" python3 cli.py 2700 | grep -q "Total notes dispensed: 6"; then
   pass "CLI in the image dispenses the example from the brief"
 else
   fail "CLI in the image did not dispense the example"

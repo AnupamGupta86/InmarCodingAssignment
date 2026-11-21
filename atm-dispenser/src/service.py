@@ -1,11 +1,11 @@
-"""The ATM as a small HTTP/JSON service (standard library only).
+"""The ATM as a small, hardened HTTP/JSON service (standard library only).
 
-    python -m service                     # listens on http://127.0.0.1:8080
+    python3 atm-dispenser/src/service.py            # listens on http://127.0.0.1:8080
 
 Endpoints
     GET  /health        liveness probe   -> 200 {"status": "ok", "version": "1.0.20261120183012"}
     GET  /inventory     notes in the ATM -> 200 {"inventory": {"500": 8, ...}, "total_cash": 8000}
-    GET  /openapi.json  OpenAPI 3 description of this API
+    GET  /openapi.json  OpenAPI 3 description of this API (used by the security scan in CI)
     POST /withdrawals   body {"amount": 2700}
                         200 dispensed         {"amount", "dispensed", "total_notes", "inventory"}
                         400 invalid input     {"error": "Amount cannot be negative, got -5"}
@@ -20,7 +20,7 @@ Configuration (environment variables)
     ATM_MAX_WITHDRAWAL   largest amount per withdrawal (default 200000)
     ATM_VERSION          build version reported by /health (set by the image build; default "dev")
     ATM_API_KEY          if set (16+ characters), /inventory and /withdrawals need the header
-                         "Authorization: Bearer <key>". Health checks stay open.
+                         "Authorization: Bearer <key>". The health check stays open.
 
 Security controls are listed in the "Security" section of the README.
 """
@@ -31,21 +31,26 @@ import logging
 import os
 import re
 import signal
-import socket
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Mapping, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
-from dispenser import CANNOT_DISPENSE, DEFAULT_INVENTORY, DEFAULT_MAX_WITHDRAWAL, CashDispenser
-from errors import ATMError
-from openapi import OPENAPI_SPEC
-from validation import parse_inventory, validate_amount
+from dispenser import (
+    CANNOT_DISPENSE,
+    DEFAULT_INVENTORY,
+    DEFAULT_MAX_WITHDRAWAL,
+    ATMError,
+    CashDispenser,
+    Notes,
+    Validator,
+)
 
 MAX_BODY_BYTES = 1024
 MIN_API_KEY_LENGTH = 16
@@ -71,41 +76,41 @@ class ConfigError(ValueError):
 
 
 @dataclass
-class Config:
+class ServiceConfig:
     atm: CashDispenser
     host: str
     port: int
-    api_key: Optional[str]
+    api_key: str | None
     version: str
 
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str]) -> "ServiceConfig":
+        """Read and check the settings from environment variables."""
+        port_text = environ.get("ATM_PORT", "8080")
+        if not port_text.isdigit() or not 0 <= int(port_text) <= 65535:
+            raise ConfigError(f"ATM_PORT must be a number from 0 to 65535, got {port_text!r}")
 
-def load_config(environ: Mapping[str, str]) -> Config:
-    """Read and check the settings from environment variables."""
-    port_text = environ.get("ATM_PORT", "8080")
-    if not port_text.isdigit() or not 0 <= int(port_text) <= 65535:
-        raise ConfigError(f"ATM_PORT must be a number from 0 to 65535, got {port_text!r}")
+        try:
+            max_withdrawal = Validator.amount(environ.get("ATM_MAX_WITHDRAWAL", str(DEFAULT_MAX_WITHDRAWAL)))
+        except ATMError as error:
+            raise ConfigError(f"ATM_MAX_WITHDRAWAL is invalid: {error}") from None
 
-    try:
-        max_withdrawal = validate_amount(environ.get("ATM_MAX_WITHDRAWAL", str(DEFAULT_MAX_WITHDRAWAL)))
-    except ATMError as error:
-        raise ConfigError(f"ATM_MAX_WITHDRAWAL is invalid: {error}") from None
+        version = environ.get("ATM_VERSION", "dev")
+        if not _SAFE_VERSION.match(version):
+            raise ConfigError(f"ATM_VERSION must be letters, digits, '.', '+' or '-', got {version[:64]!r}")
 
-    version = environ.get("ATM_VERSION", "dev")
-    if not _SAFE_VERSION.match(version):
-        raise ConfigError(f"ATM_VERSION must be letters, digits, '.', '+' or '-', got {version[:64]!r}")
+        api_key = environ.get("ATM_API_KEY") or None
+        if api_key is not None and len(api_key) < MIN_API_KEY_LENGTH:
+            raise ConfigError(f"ATM_API_KEY must be at least {MIN_API_KEY_LENGTH} characters long")
 
-    api_key = environ.get("ATM_API_KEY") or None
-    if api_key is not None and len(api_key) < MIN_API_KEY_LENGTH:
-        raise ConfigError(f"ATM_API_KEY must be at least {MIN_API_KEY_LENGTH} characters long")
+        try:
+            inventory = Validator.parse_inventory(environ.get("ATM_INVENTORY", DEFAULT_INVENTORY))
+            atm = CashDispenser(inventory, max_withdrawal=max_withdrawal)
+        except ATMError as error:
+            raise ConfigError(f"ATM_INVENTORY is invalid: {error}") from None
 
-    try:
-        inventory = parse_inventory(environ.get("ATM_INVENTORY", DEFAULT_INVENTORY))
-        atm = CashDispenser(inventory, max_withdrawal=max_withdrawal)
-    except ATMError as error:
-        raise ConfigError(f"ATM_INVENTORY is invalid: {error}") from None
-
-    return Config(atm=atm, host=environ.get("ATM_HOST", "127.0.0.1"), port=int(port_text),
-                  api_key=api_key, version=version)
+        return cls(atm=atm, host=environ.get("ATM_HOST", "127.0.0.1"), port=int(port_text),
+                   api_key=api_key, version=version)
 
 
 # HTTP request handling --------------------------------------------------------------------
@@ -186,7 +191,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            amount = validate_amount(payload["amount"])
+            amount = Validator.amount(payload["amount"])
             notes, inventory_after = self.server.atm.dispense_with_inventory(amount)
         except ATMError as error:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
@@ -229,7 +234,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
                    extra_headers={"WWW-Authenticate": "Bearer"}, close=True)
         return False
 
-    def _read_json_body(self) -> Optional[Dict[str, Any]]:
+    def _read_json_body(self) -> dict[str, Any] | None:
         """Return the request body as a dict, or send an error response and return None."""
         raw = self._read_body()
         if raw is None:
@@ -249,7 +254,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             return None
         return payload
 
-    def _read_body(self) -> Optional[bytes]:
+    def _read_body(self) -> bytes | None:
         """Read exactly Content-Length bytes, or send an error response and return None."""
         if self.headers.get("Transfer-Encoding"):
             self._send(HTTPStatus.LENGTH_REQUIRED,
@@ -271,7 +276,7 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
 
         try:
             raw = self.rfile.read(length)
-        except socket.timeout:
+        except TimeoutError:
             self._send(HTTPStatus.REQUEST_TIMEOUT, {"error": "Timed out waiting for the request body"}, close=True)
             return None
         self._body_read = True
@@ -282,8 +287,8 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
 
     # Responses and logging ------------------------------------------------------------------
 
-    def _send(self, status: HTTPStatus, body: Dict[str, Any],
-              extra_headers: Optional[Dict[str, str]] = None, close: bool = False) -> None:
+    def _send(self, status: HTTPStatus, body: dict[str, Any],
+              extra_headers: dict[str, str] | None = None, close: bool = False) -> None:
         data = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -306,9 +311,9 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             return False
         return bool(headers.get("Transfer-Encoding")) or headers.get("Content-Length", "0").strip() != "0"
 
-    def send_error(self, code: int, message: Optional[str] = None, explain: Optional[str] = None) -> None:
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
         """Malformed requests (bad request line, header too long, ...) also get a JSON answer."""
-        if self.request_version == "HTTP/0.9":  # older Pythons would otherwise omit the status line
+        if self.request_version == "HTTP/0.9":  # otherwise the status line would be left out
             self.request_version = "HTTP/1.1"
         self._send(HTTPStatus(code), {"error": message or HTTPStatus(code).phrase}, close=True)
 
@@ -330,11 +335,11 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         """Replace the default unstructured stderr logging (it would print raw request lines)."""
 
 
-def _as_json_notes(notes: Mapping[int, int]) -> Dict[str, int]:
+def _as_json_notes(notes: Notes) -> dict[str, int]:
     return {str(value): count for value, count in notes.items()}
 
 
-# Server -----------------------------------------------------------------------------------
+# Server and start-up ----------------------------------------------------------------------
 
 class ATMServer(ThreadingHTTPServer):
     """An HTTP server that owns one ATM. Each request runs in its own thread; the ATM's lock
@@ -343,20 +348,13 @@ class ATMServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128  # the default (5) drops connections when many customers arrive at once
 
-    def __init__(self, address, atm: CashDispenser, api_key: Optional[str] = None, version: str = "dev"):
-        super().__init__(address, ATMRequestHandler)
+    def __init__(self, atm: CashDispenser, host: str = "127.0.0.1", port: int = 8080,
+                 api_key: str | None = None, version: str = "dev"):
+        super().__init__((host, port), ATMRequestHandler)
         self.atm = atm
         self.api_key = api_key
         self.version = version
 
-
-def create_server(atm: CashDispenser, host: str = "127.0.0.1", port: int = 8080,
-                  api_key: Optional[str] = None, version: str = "dev") -> ATMServer:
-    """Create (but do not start) the server. Port 0 picks a free port (used by the tests)."""
-    return ATMServer((host, port), atm, api_key, version)
-
-
-# Logging and start-up ---------------------------------------------------------------------
 
 class JsonLogFormatter(logging.Formatter):
     """One JSON object per line: easy to search in any log platform."""
@@ -375,36 +373,89 @@ class JsonLogFormatter(logging.Formatter):
         return json.dumps(entry)
 
 
-def main(environ: Mapping[str, str] = os.environ) -> int:
-    """Start the service and run until SIGTERM or Ctrl+C. Returns the exit code."""
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonLogFormatter())
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+class ATMService:
+    """Starts the service from environment variables and runs it until SIGTERM or Ctrl+C."""
 
-    try:
-        config = load_config(environ)
-        server = create_server(config.atm, config.host, config.port, config.api_key, config.version)
-    except (ConfigError, OSError) as error:
-        log.error(f"cannot start: {error}")
-        return 2
+    def __init__(self, environ: Mapping[str, str] = os.environ):
+        self.environ = environ
 
-    if config.api_key is None:
-        log.warning("ATM_API_KEY is not set: /inventory and /withdrawals are open to anyone")
+    def run(self) -> int:
+        """Returns the exit code: 0 after a clean shutdown, 2 if the configuration is invalid."""
+        self._configure_logging()
+        try:
+            config = ServiceConfig.from_environment(self.environ)
+            server = ATMServer(config.atm, config.host, config.port, config.api_key, config.version)
+        except (ConfigError, OSError) as error:
+            log.error(f"cannot start: {error}")
+            return 2
 
-    def stop(signum, frame):  # docker stop sends SIGTERM
-        log.info("shutting down")
-        threading.Thread(target=server.shutdown, daemon=True).start()
+        if config.api_key is None:
+            log.warning("ATM_API_KEY is not set: /inventory and /withdrawals are open to anyone")
 
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
+        def stop(signum, frame):  # docker stop sends SIGTERM
+            log.info("shutting down")
+            threading.Thread(target=server.shutdown, daemon=True).start()
 
-    log.info(f"atm-dispenser {config.version} listening on http://{config.host}:{server.server_port}")
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
-    return 0
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+
+        log.info(f"atm-dispenser {config.version} listening on http://{config.host}:{server.server_port}")
+        try:
+            server.serve_forever()
+        finally:
+            server.server_close()
+        return 0
+
+    @staticmethod
+    def _configure_logging() -> None:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(JsonLogFormatter())
+        logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
+
+# OpenAPI contract -------------------------------------------------------------------------
+# Served at GET /openapi.json. It documents the API and lets the OWASP ZAP scan in CI find and
+# attack every endpoint.
+
+def _json_response(description: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"description": description, "content": {"application/json": {"schema": schema or {"type": "object"}}}}
+
+
+_NOTES_SCHEMA = {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0},
+                 "example": {"500": 3, "200": 9, "100": 20}}
+_ERROR_SCHEMA = {"type": "object", "properties": {"error": {"type": "string"}}}
+
+OPENAPI_SPEC: dict[str, Any] = {
+    "openapi": "3.0.3",
+    "info": {"title": "ATM Cash Dispenser API", "version": "1.0.0",
+             "description": "Dispenses withdrawals with the fewest notes from a limited inventory."},
+    "components": {"securitySchemes": {"apiKey": {"type": "http", "scheme": "bearer"}}},
+    "paths": {
+        "/health": {"get": {"summary": "Liveness probe and build version", "security": [],
+                            "responses": {"200": _json_response("Service is alive")}}},
+        "/inventory": {"get": {"summary": "Notes currently in the ATM", "security": [{"apiKey": []}],
+                               "responses": {"200": _json_response("Current inventory"),
+                                             "401": _json_response("Missing or invalid API key", _ERROR_SCHEMA)}}},
+        "/withdrawals": {"post": {
+            "summary": "Withdraw an amount",
+            "security": [{"apiKey": []}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["amount"], "additionalProperties": False,
+                "properties": {"amount": {"type": "integer", "minimum": 1, "example": 2700}}}}}},
+            "responses": {
+                "200": _json_response("Cash dispensed", {"type": "object", "properties": {
+                    "amount": {"type": "integer"}, "dispensed": _NOTES_SCHEMA,
+                    "total_notes": {"type": "integer"}, "inventory": _NOTES_SCHEMA}}),
+                "400": _json_response("Invalid amount or request body", _ERROR_SCHEMA),
+                "401": _json_response("Missing or invalid API key", _ERROR_SCHEMA),
+                "422": _json_response("Cannot dispense requested amount (inventory unchanged)", _ERROR_SCHEMA),
+            },
+        }},
+        "/openapi.json": {"get": {"summary": "This document", "security": [],
+                                  "responses": {"200": _json_response("OpenAPI document")}}},
+    },
+}
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(ATMService().run())

@@ -8,11 +8,17 @@ the machine started with, and that no count ever goes below zero.
 import threading
 import time
 import unittest
-from unittest import mock
 
-import allocator
-import dispenser
-from dispenser import CashDispenser
+from dispenser import CashDispenser, NoteAllocator
+
+
+class SlowAllocator(NoteAllocator):
+    """Finds the notes, then pauses: other threads would read the old inventory during the pause."""
+
+    def find_minimum_notes(self, amount, inventory):
+        result = super().find_minimum_notes(amount, inventory)
+        time.sleep(0.02)
+        return result
 
 
 def withdraw_concurrently(atm, amounts):
@@ -56,7 +62,7 @@ class ConcurrentWithdrawalTests(unittest.TestCase):
         atm = CashDispenser(start)
         amounts = [2700, 600, 300, 100, 1500, 900, 2000, 400, 250, 700] * 4
         results = withdraw_concurrently(atm, amounts)
-        for amount, notes in zip(amounts, results):
+        for amount, notes in zip(amounts, results, strict=True):
             if notes:
                 self.assertEqual(sum(v * c for v, c in notes.items()), amount)
         self.assert_notes_conserved(start, atm, results)
@@ -64,29 +70,14 @@ class ConcurrentWithdrawalTests(unittest.TestCase):
     def test_lock_prevents_double_spending_even_when_allocation_is_slow(self):
         """Make allocation slow to widen the race window: without the lock, every thread
         would see the same single note and all of them would 'get' it."""
-        real_allocator = allocator.find_minimum_notes
-
-        def slow_allocator(amount, inventory):
-            result = real_allocator(amount, inventory)
-            time.sleep(0.02)  # other threads would read the old inventory during this pause
-            return result
-
-        with mock.patch.object(dispenser, "find_minimum_notes", slow_allocator):
-            atm = CashDispenser({500: 1})
-            results = withdraw_concurrently(atm, [500] * 10)
+        atm = CashDispenser({500: 1}, allocator=SlowAllocator())
+        results = withdraw_concurrently(atm, [500] * 10)
 
         self.assertEqual(sum(1 for r in results if r), 1)
         self.assertEqual(atm.inventory, {500: 0})
 
     def test_without_the_lock_the_race_really_happens(self):
         """Control experiment: proves the test above would catch a missing lock."""
-        real_allocator = allocator.find_minimum_notes
-
-        def slow_allocator(amount, inventory):
-            result = real_allocator(amount, inventory)
-            time.sleep(0.02)
-            return result
-
         class NoLock:
             def __enter__(self):
                 return self
@@ -94,10 +85,9 @@ class ConcurrentWithdrawalTests(unittest.TestCase):
             def __exit__(self, *exc):
                 return False
 
-        with mock.patch.object(dispenser, "find_minimum_notes", slow_allocator):
-            atm = CashDispenser({500: 1})
-            atm._lock = NoLock()  # deliberately remove the protection
-            results = withdraw_concurrently(atm, [500] * 10)
+        atm = CashDispenser({500: 1}, allocator=SlowAllocator())
+        atm._lock = NoLock()  # deliberately remove the protection
+        results = withdraw_concurrently(atm, [500] * 10)
 
         self.assertGreater(sum(1 for r in results if r), 1, "expected several threads to take the one note")
 

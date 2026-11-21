@@ -3,31 +3,30 @@
 import unittest
 from collections import OrderedDict
 
-from errors import ATMError, InvalidAmountError, InvalidInventoryError
-from validation import parse_inventory, validate_amount, validate_inventory
+from dispenser import ATMError, InvalidAmountError, InvalidInventoryError, Validator
 
 
 class ValidAmountTests(unittest.TestCase):
     def test_positive_whole_number_is_accepted(self):
-        self.assertEqual(validate_amount(2700), 2700)
+        self.assertEqual(Validator.amount(2700), 2700)
 
     def test_smallest_positive_amount_is_accepted(self):
-        self.assertEqual(validate_amount(1), 1)
+        self.assertEqual(Validator.amount(1), 1)
 
     def test_whole_number_text_is_accepted(self):
-        self.assertEqual(validate_amount("2700"), 2700)
+        self.assertEqual(Validator.amount("2700"), 2700)
 
     def test_text_with_surrounding_spaces_and_plus_sign_is_accepted(self):
-        self.assertEqual(validate_amount("  +2700 "), 2700)
+        self.assertEqual(Validator.amount("  +2700 "), 2700)
 
     def test_very_large_amount_is_accepted(self):
-        self.assertEqual(validate_amount(10 ** 12), 10 ** 12)
+        self.assertEqual(Validator.amount(10 ** 12), 10 ** 12)
 
 
 class InvalidAmountTests(unittest.TestCase):
     def assert_rejected(self, amount, message_part):
         with self.assertRaises(InvalidAmountError) as raised:
-            validate_amount(amount)
+            Validator.amount(amount)
         self.assertIn(message_part, str(raised.exception))
 
     def test_zero_is_rejected(self):
@@ -95,30 +94,30 @@ class InvalidAmountTests(unittest.TestCase):
 
     def test_amount_errors_are_value_errors(self):
         with self.assertRaises(ValueError):
-            validate_amount(-1)
+            Validator.amount(-1)
 
 
 class ValidInventoryTests(unittest.TestCase):
     def test_example_inventory_is_accepted(self):
-        self.assertEqual(validate_inventory({500: 8, 200: 10, 100: 20}), {500: 8, 200: 10, 100: 20})
+        self.assertEqual(Validator.inventory({500: 8, 200: 10, 100: 20}), {500: 8, 200: 10, 100: 20})
 
     def test_result_is_sorted_largest_denomination_first(self):
-        result = validate_inventory({100: 20, 500: 8, 200: 10})
+        result = Validator.inventory({100: 20, 500: 8, 200: 10})
         self.assertEqual(list(result), [500, 200, 100])
 
     def test_zero_notes_of_a_denomination_is_allowed(self):
-        self.assertEqual(validate_inventory({500: 0, 100: 3}), {500: 0, 100: 3})
+        self.assertEqual(Validator.inventory({500: 0, 100: 3}), {500: 0, 100: 3})
 
     def test_any_denomination_is_supported(self):
         inventory = {2000: 1, 50: 4, 20: 7, 10: 3, 1: 9}
-        self.assertEqual(validate_inventory(inventory), inventory)
+        self.assertEqual(Validator.inventory(inventory), inventory)
 
     def test_other_mapping_types_are_accepted(self):
-        self.assertEqual(validate_inventory(OrderedDict([(100, 1)])), {100: 1})
+        self.assertEqual(Validator.inventory(OrderedDict([(100, 1)])), {100: 1})
 
     def test_result_is_an_independent_copy(self):
         original = {500: 8}
-        result = validate_inventory(original)
+        result = Validator.inventory(original)
         result[500] = 0
         self.assertEqual(original, {500: 8})
 
@@ -126,7 +125,7 @@ class ValidInventoryTests(unittest.TestCase):
 class InvalidInventoryTests(unittest.TestCase):
     def assert_rejected(self, inventory, message_part):
         with self.assertRaises(InvalidInventoryError) as raised:
-            validate_inventory(inventory)
+            Validator.inventory(inventory)
         self.assertIn(message_part, str(raised.exception))
 
     def test_empty_inventory_is_rejected(self):
@@ -168,56 +167,56 @@ class InvalidInventoryTests(unittest.TestCase):
 
     def test_inventory_errors_share_a_common_base_class(self):
         with self.assertRaises(ATMError):
-            validate_inventory({})
+            Validator.inventory({})
 
 
 class ParseInventoryTests(unittest.TestCase):
     def test_simple_format(self):
-        self.assertEqual(parse_inventory("500:8, 200:10, 100:20"), {500: 8, 200: 10, 100: 20})
+        self.assertEqual(Validator.parse_inventory("500:8, 200:10, 100:20"), {500: 8, 200: 10, 100: 20})
 
     def test_format_used_in_the_brief(self):
-        self.assertEqual(parse_inventory("{ 500: 8, 200: 10, 100: 20 }"), {500: 8, 200: 10, 100: 20})
+        self.assertEqual(Validator.parse_inventory("{ 500: 8, 200: 10, 100: 20 }"), {500: 8, 200: 10, 100: 20})
 
     def test_trailing_comma_is_tolerated(self):
-        self.assertEqual(parse_inventory("500:8,"), {500: 8})
+        self.assertEqual(Validator.parse_inventory("500:8,"), {500: 8})
 
     def test_negative_values_are_parsed_and_left_for_the_atm_to_reject(self):
-        self.assertEqual(parse_inventory("500:-1"), {500: -1})
+        self.assertEqual(Validator.parse_inventory("500:-1"), {500: -1})
 
     def test_rejects_empty_text(self):
         for text in ("", "   ", "{}", "{ }"):
             with self.subTest(text=text), self.assertRaises(InvalidInventoryError):
-                parse_inventory(text)
+                Validator.parse_inventory(text)
 
     def test_rejects_missing_count(self):
         with self.assertRaises(InvalidInventoryError):
-            parse_inventory("500")
+            Validator.parse_inventory("500")
 
     def test_rejects_extra_colon(self):
         with self.assertRaises(InvalidInventoryError):
-            parse_inventory("500:8:1")
+            Validator.parse_inventory("500:8:1")
 
     def test_rejects_non_numeric_denomination(self):
         with self.assertRaisesRegex(InvalidInventoryError, "denomination 'abc'"):
-            parse_inventory("abc:8")
+            Validator.parse_inventory("abc:8")
 
     def test_rejects_non_numeric_count(self):
         with self.assertRaisesRegex(InvalidInventoryError, "note count"):
-            parse_inventory("500:many")
+            Validator.parse_inventory("500:many")
 
     def test_rejects_non_ascii_digits(self):
         with self.assertRaisesRegex(InvalidInventoryError, "must be a whole number"):
-            parse_inventory("５００:8")
+            Validator.parse_inventory("５００:8")
 
     def test_huge_number_gets_a_short_clear_message(self):
         with self.assertRaises(InvalidInventoryError) as raised:
-            parse_inventory("500:" + "9" * 5000)
+            Validator.parse_inventory("500:" + "9" * 5000)
         self.assertIn("too large", str(raised.exception))
         self.assertLess(len(str(raised.exception)), 120)
 
     def test_rejects_duplicate_denomination(self):
         with self.assertRaisesRegex(InvalidInventoryError, "more than once"):
-            parse_inventory("500:8, 500:2")
+            Validator.parse_inventory("500:8, 500:2")
 
 
 if __name__ == "__main__":

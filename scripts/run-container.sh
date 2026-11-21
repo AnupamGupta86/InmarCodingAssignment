@@ -80,14 +80,14 @@ check_hardening() {
   step "6/7  Checking the container is locked down"
 
   local user_id
-  user_id="$(docker exec "${CONTAINER}" python -c 'import os; print(os.getuid())')"
+  user_id="$(docker exec "${CONTAINER}" python3 -c 'import os; print(os.getuid())')"
   if [[ "${user_id}" == "10001" ]]; then
     pass "runs as non-root user ${user_id}"
   else
     fail "runs as user ${user_id}, expected 10001"
   fi
 
-  if docker exec "${CONTAINER}" python -c "open('/app/probe', 'w')" 2> /dev/null; then
+  if docker exec "${CONTAINER}" python3 -c "open('/app/probe', 'w')" 2> /dev/null; then
     fail "the filesystem is writable"
   else
     pass "the filesystem is read-only"

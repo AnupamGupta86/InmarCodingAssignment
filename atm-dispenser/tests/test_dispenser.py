@@ -2,8 +2,7 @@
 
 import unittest
 
-from dispenser import CANNOT_DISPENSE, CashDispenser
-from errors import InvalidAmountError, InvalidInventoryError
+from dispenser import CANNOT_DISPENSE, CashDispenser, InvalidAmountError, InvalidInventoryError
 
 
 class SuccessfulWithdrawalTests(unittest.TestCase):

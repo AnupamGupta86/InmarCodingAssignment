@@ -7,13 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from cli import (
-    EXIT_INVALID_INPUT,
-    EXIT_NOT_DISPENSED,
-    EXIT_OK,
-    format_notes,
-    main,
-)
+from cli import EXIT_INVALID_INPUT, EXIT_NOT_DISPENSED, EXIT_OK, CommandLine
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,16 +15,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def run(argv, stdin_text=""):
     """Run the CLI in-process. Returns (exit code, stdout, stderr)."""
     out, err = io.StringIO(), io.StringIO()
-    code = main(argv, stdin=io.StringIO(stdin_text), stdout=out, stderr=err)
+    code = CommandLine(stdin=io.StringIO(stdin_text), stdout=out, stderr=err).run(argv)
     return code, out.getvalue(), err.getvalue()
 
 
 class FormatTests(unittest.TestCase):
     def test_notes_are_listed_largest_first(self):
-        self.assertEqual(format_notes({200: 1, 500: 5}), "₹500 × 5, ₹200 × 1")
+        self.assertEqual(CommandLine.format_notes({200: 1, 500: 5}), "₹500 × 5, ₹200 × 1")
 
     def test_no_notes(self):
-        self.assertEqual(format_notes({}), "no notes")
+        self.assertEqual(CommandLine.format_notes({}), "no notes")
 
 
 class CommandLineTests(unittest.TestCase):
@@ -117,7 +111,7 @@ class CommandLineTests(unittest.TestCase):
                 raise KeyboardInterrupt
 
         out, err = io.StringIO(), io.StringIO()
-        code = main([], stdin=TypesThenPressesCtrlC(), stdout=out, stderr=err)
+        code = CommandLine(stdin=TypesThenPressesCtrlC(), stdout=out, stderr=err).run([])
         self.assertEqual(code, EXIT_OK)
         self.assertIn("Total notes dispensed: 6", out.getvalue())
         self.assertEqual(err.getvalue(), "")
@@ -131,8 +125,8 @@ class CommandLineTests(unittest.TestCase):
 class RunAsModuleTests(unittest.TestCase):
     def test_python_dash_m_cli(self):
         result = subprocess.run(
-            [sys.executable, "-m", "cli", "--inventory", "4:1, 3:2", "6"],
-            cwd=PROJECT_ROOT / "src", capture_output=True, text=True, encoding="utf-8",
+            [sys.executable, str(PROJECT_ROOT / "src" / "cli.py"), "--inventory", "4:1, 3:2", "6"],
+            cwd=PROJECT_ROOT.parent, capture_output=True, text=True, encoding="utf-8",
             env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}, timeout=60,
         )
         self.assertEqual(result.returncode, EXIT_OK, result.stderr)

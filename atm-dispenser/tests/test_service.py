@@ -25,10 +25,11 @@ from service import (
     MAX_BODY_BYTES,
     SECURITY_HEADERS,
     ATMRequestHandler,
+    ATMServer,
+    ATMService,
     ConfigError,
     JsonLogFormatter,
-    create_server,
-    load_config,
+    ServiceConfig,
 )
 
 API_KEY = "test-key-0123456789abcdef"
@@ -39,7 +40,7 @@ class RunningServer:
 
     def __init__(self, inventory=None, api_key=None, max_withdrawal=200_000):
         self.atm = CashDispenser(inventory or {500: 8, 200: 10, 100: 20}, max_withdrawal=max_withdrawal)
-        self.server = create_server(self.atm, "127.0.0.1", 0, api_key)
+        self.server = ATMServer(self.atm, "127.0.0.1", 0, api_key)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05},
                                        daemon=True)
@@ -369,7 +370,7 @@ class ConcurrentHttpTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_defaults(self):
-        config = load_config({})
+        config = ServiceConfig.from_environment({})
         self.assertEqual((config.host, config.port, config.api_key), ("127.0.0.1", 8080, None))
         self.assertEqual(config.version, "dev")
         self.assertEqual(config.atm.inventory, {500: 8, 200: 10, 100: 20})
@@ -377,7 +378,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_version_is_reported_by_health(self):
         atm = CashDispenser({500: 1})
-        server = create_server(atm, "127.0.0.1", 0, version="1.0.20261120183012")
+        server = ATMServer(atm, "127.0.0.1", 0, version="1.0.20261120183012")
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
         try:
@@ -390,7 +391,7 @@ class ConfigTests(unittest.TestCase):
             server.server_close()
 
     def test_custom_values(self):
-        config = load_config({"ATM_INVENTORY": "4:1, 3:2", "ATM_HOST": "0.0.0.0", "ATM_PORT": "9000",
+        config = ServiceConfig.from_environment({"ATM_INVENTORY": "4:1, 3:2", "ATM_HOST": "0.0.0.0", "ATM_PORT": "9000",
                               "ATM_MAX_WITHDRAWAL": "5000", "ATM_API_KEY": API_KEY,
                               "ATM_VERSION": "1.0.20261120183012"})
         self.assertEqual(config.version, "1.0.20261120183012")
@@ -405,7 +406,7 @@ class ConfigTests(unittest.TestCase):
                              ({"ATM_INVENTORY": "{}"}, "ATM_INVENTORY"),
                              ({"ATM_INVENTORY": "500:-1"}, "ATM_INVENTORY")):
             with self.subTest(env=env), self.assertRaisesRegex(ConfigError, message):
-                load_config(env)
+                ServiceConfig.from_environment(env)
 
     def test_main_starts_and_stops_cleanly(self):
         handlers = {}
@@ -413,7 +414,7 @@ class ConfigTests(unittest.TestCase):
         result = []
         with mock.patch.object(service.signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler)), \
                 self.assertLogs("atm.service", level="INFO") as captured:
-            thread = threading.Thread(target=lambda: result.append(service.main(environ)))
+            thread = threading.Thread(target=lambda: result.append(ATMService(environ).run()))
             thread.start()
             deadline = time.time() + 10
             while not any("listening on" in r.getMessage() for r in captured.records) and time.time() < deadline:
@@ -430,7 +431,7 @@ class ConfigTests(unittest.TestCase):
     def test_real_process_stops_on_sigterm(self):
         src = Path(__file__).resolve().parent.parent / "src"
         process = subprocess.Popen(
-            [sys.executable, "-m", "service"], cwd=src, stdout=subprocess.PIPE, text=True,
+            [sys.executable, str(src / "service.py")], cwd=src.parent.parent, stdout=subprocess.PIPE, text=True,
             env={**os.environ, "ATM_PORT": "0", "PYTHONDONTWRITEBYTECODE": "1"},
         )
         try:
@@ -452,9 +453,8 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("ValueError: boom", entry["error"])
 
     def test_main_exits_with_code_2_on_bad_config(self):
-        import service
         with self.assertLogs("atm.service", level="ERROR"):
-            self.assertEqual(service.main({"ATM_PORT": "abc"}), 2)
+            self.assertEqual(ATMService({"ATM_PORT": "abc"}).run(), 2)
         logging.getLogger().handlers.clear()
 
 

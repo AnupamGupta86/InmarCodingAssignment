@@ -15,11 +15,8 @@ import string
 import unittest
 from collections.abc import Hashable
 
-from cli import parse_inventory
-from dispenser import CashDispenser
-from errors import InvalidAmountError, InvalidInventoryError
+from dispenser import CashDispenser, InvalidAmountError, InvalidInventoryError, Validator
 from tests.test_service import RunningServer
-from validation import validate_amount, validate_inventory
 
 SEED = 20261120
 
@@ -54,7 +51,7 @@ class ValidationFuzzTests(unittest.TestCase):
         for _ in range(5000):
             value = random_value(rng)
             try:
-                result = validate_amount(value)
+                result = Validator.amount(value)
             except InvalidAmountError:
                 continue
             self.assertIs(type(result), int, repr(value))
@@ -66,7 +63,7 @@ class ValidationFuzzTests(unittest.TestCase):
             pairs = [(random_value(rng), random_value(rng)) for _ in range(rng.randint(0, 4))]
             inventory = {key: value for key, value in pairs if isinstance(key, Hashable)}
             try:
-                result = validate_inventory(inventory)
+                result = Validator.inventory(inventory)
             except InvalidInventoryError:
                 continue
             for denomination, count in result.items():
@@ -81,7 +78,7 @@ class ValidationFuzzTests(unittest.TestCase):
         for _ in range(3000):
             text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30)))
             with contextlib.suppress(InvalidInventoryError):
-                parse_inventory(text)
+                Validator.parse_inventory(text)
 
 
 class DispenserPropertyTests(unittest.TestCase):
@@ -103,7 +100,7 @@ class DispenserPropertyTests(unittest.TestCase):
                 if notes is None:
                     self.assertEqual(atm.inventory, before)
                     continue
-                self.assertEqual(sum(v * c for v, c in notes.items()), validate_amount(amount))
+                self.assertEqual(sum(v * c for v, c in notes.items()), Validator.amount(amount))
                 for value, count in notes.items():
                     self.assertGreater(count, 0)
                     self.assertLessEqual(count, before[value])
