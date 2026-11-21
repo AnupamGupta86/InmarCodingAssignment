@@ -59,6 +59,9 @@ class Validator:
     # Longer text is refused before converting it, so nobody can make us parse a 100,000-digit number.
     MAX_DIGITS = 18
 
+    # Real ATMs have a handful of cassettes; this keeps a mistyped inventory from slowing every withdrawal.
+    MAX_DENOMINATIONS = 50
+
     @classmethod
     def amount(cls, amount) -> int:
         """Return the withdrawal amount as an int. Accepts an int or whole-number text (" 2700 ")."""
@@ -66,16 +69,18 @@ class Validator:
             text = amount.strip()
             if not cls.WHOLE_NUMBER_TEXT.match(text):
                 if cls._looks_like_a_number(text):
-                    raise InvalidAmountError(f"Amount must be a whole number, got {amount!r}")
-                raise InvalidAmountError(f"Amount must be a number, got {amount!r}")
+                    raise InvalidAmountError(f"Amount must be a whole number, got {cls._shown(amount)}")
+                raise InvalidAmountError(f"Amount must be a number, got {cls._shown(amount)}")
             if len(text.lstrip("+-")) > cls.MAX_DIGITS:
                 raise InvalidAmountError(f"Amount is too large: at most {cls.MAX_DIGITS} digits")
             amount = int(text)
         elif not cls._is_whole_number(amount):
             if isinstance(amount, float):
-                raise InvalidAmountError(f"Amount must be a whole number, got {amount!r}")
-            raise InvalidAmountError(f"Amount must be a number, got {amount!r}")
+                raise InvalidAmountError(f"Amount must be a whole number, got {cls._shown(amount)}")
+            raise InvalidAmountError(f"Amount must be a number, got {cls._shown(amount)}")
 
+        if abs(amount) >= 10 ** cls.MAX_DIGITS:
+            raise InvalidAmountError(f"Amount is too large: at most {cls.MAX_DIGITS} digits")
         if amount < 0:
             raise InvalidAmountError(f"Amount cannot be negative, got {amount}")
         if amount == 0:
@@ -95,6 +100,10 @@ class Validator:
             )
         if not inventory:
             raise InvalidInventoryError("ATM inventory is empty: add at least one denomination")
+        if len(inventory) > cls.MAX_DENOMINATIONS:
+            raise InvalidInventoryError(
+                f"Too many denominations: {len(inventory)} (at most {cls.MAX_DENOMINATIONS})"
+            )
 
         validated: Notes = {}
         for denomination, count in inventory.items():
@@ -142,6 +151,12 @@ class Validator:
         return inventory
 
     @staticmethod
+    def _shown(value, limit: int = 30) -> str:
+        """The value as it appears in an error message, cut short so long input is never echoed."""
+        text = repr(value)
+        return text if len(text) <= limit else text[:limit] + "…"
+
+    @staticmethod
     def _is_whole_number(value) -> bool:
         # bool is a subclass of int in Python (True == 1), so it must be excluded explicitly.
         return isinstance(value, int) and not isinstance(value, bool)
@@ -183,7 +198,8 @@ class InventoryStore:
     def __init__(self, path: str | os.PathLike[str]):
         if fcntl is None:  # pragma: no cover - Windows
             raise InvalidInventoryError("A state file needs macOS or Linux; on Windows use the Docker image")
-        self.path = Path(path)
+        # Follow a symbolic link once, so saving updates the real file instead of replacing the link.
+        self.path = Path(os.path.realpath(path))
         self._lock_path = self.path.with_name(self.path.name + ".lock")
 
     @contextlib.contextmanager
@@ -202,7 +218,8 @@ class InventoryStore:
     def load(self) -> Notes:
         """Read and validate the saved inventory. Raises InvalidInventoryError if the file is bad."""
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            # utf-8-sig also accepts a file saved with a byte-order mark (Windows Notepad).
+            data = json.loads(self.path.read_text(encoding="utf-8-sig"), object_pairs_hook=self._no_duplicate_keys)
         except (OSError, ValueError) as error:
             raise InvalidInventoryError(f"Cannot read the state file {self.path}: {error}") from None
         if not isinstance(data, dict) or not isinstance(data.get("inventory"), dict):
@@ -212,8 +229,20 @@ class InventoryStore:
         for key, count in data["inventory"].items():
             if not Validator.WHOLE_NUMBER_TEXT.match(key) or len(key) > Validator.MAX_DIGITS:
                 raise InvalidInventoryError(f"Invalid denomination {key[:20]!r} in the state file {self.path}")
+            if int(key) in notes:  # "500" and "0500" are the same denomination
+                raise InvalidInventoryError(
+                    f"Denomination {int(key)} is listed more than once in the state file {self.path}"
+                )
             notes[int(key)] = count
         return Validator.inventory(notes)
+
+    @staticmethod
+    def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        keys = [key for key, _ in pairs]
+        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate key(s) {', '.join(duplicates)}")
+        return dict(pairs)
 
     def save(self, notes: Notes) -> None:
         """Write the inventory atomically: readers see either the old file or the new one."""
@@ -253,6 +282,11 @@ class NoteAllocator:
 
     _IMPOSSIBLE = float("inf")
 
+    # The table has (amount in units + 1) x (number of bundles) cells, one byte each. 64 million
+    # cells is about 3 seconds and 64 MB; every Indian note and coin with up to ₹199,999 to pay
+    # needs about 19 million. Anything bigger is refused rather than exhausting memory or CPU.
+    MAX_TABLE_CELLS = 64_000_000
+
     def find_minimum_notes(self, amount: int, inventory: Mapping[int, int]) -> Notes | None:
         """Return {denomination: notes} paying `amount` with the fewest notes, or None.
 
@@ -269,6 +303,11 @@ class NoteAllocator:
         target = amount // unit              # 2700 -> 27 units
 
         bundles = [(value, size) for value in sorted(usable) for size in self.split_into_bundles(usable[value])]
+        if (target + 1) * len(bundles) > self.MAX_TABLE_CELLS:
+            raise InvalidAmountError(
+                f"Amount {amount} is too large to work out with this inventory; "
+                "lower the amount or the withdrawal limit"
+            )
         used_bundle = self._fill_table(target, unit, bundles)
         if used_bundle is None:
             return None

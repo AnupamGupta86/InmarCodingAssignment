@@ -148,6 +148,20 @@ class StateFileTests(unittest.TestCase):
         self.assertEqual(code, EXIT_OK)
         self.assertIn("ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20", out)
 
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a non-root POSIX user")
+    def test_a_failed_save_is_reported_and_nothing_is_dispensed(self):
+        run(["--state-file", self.path, "100"])
+        folder = Path(self.path).parent
+        folder.chmod(0o500)  # the folder becomes read-only: the next save cannot happen
+        try:
+            code, out, err = run(["--state-file", self.path, "100"])
+        finally:
+            folder.chmod(0o700)
+        self.assertEqual(code, EXIT_INVALID_INPUT)
+        self.assertIn("Cannot save the state file", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn("Withdrawal", out)
+
     def test_a_corrupt_state_file_is_invalid_input(self):
         Path(self.path).write_text("{bad", encoding="utf-8")
         code, _, err = run(["--state-file", self.path, "100"])

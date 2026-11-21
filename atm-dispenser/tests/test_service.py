@@ -165,7 +165,7 @@ class InvalidInputApiTests(unittest.TestCase):
             ([2700], "must be a number"),
             ({"value": 1}, "must be a number"),
             ("9" * 30, "too large"),
-            (10 ** 300, "exceeds the limit"),
+            (10 ** 300, "too large"),
             (200_001, "exceeds the limit"),
         ]
         with RunningServer() as srv:
@@ -375,6 +375,62 @@ class ConcurrentHttpTests(unittest.TestCase):
 
 
 # ------------------------------------------------------------------------- configuration
+
+class HostileHttpRegressionTests(unittest.TestCase):
+    """Found by adversarial testing."""
+
+    def raw(self, srv, data):
+        with socket.create_connection(("127.0.0.1", srv.port), timeout=10) as sock:
+            sock.sendall(data)
+            received = b""
+            while chunk := sock.recv(4096):
+                received += chunk
+        return received.decode(errors="replace")
+
+    def test_conflicting_content_length_headers_are_rejected(self):
+        with RunningServer() as srv:
+            response = self.raw(srv, b"POST /withdrawals HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                                     b"Content-Length: 15\r\nContent-Length: 2\r\n\r\n{\"amount\": 100}")
+            self.assertTrue(response.startswith("HTTP/1.1 400"), response[:60])
+            self.assertIn("Conflicting Content-Length", response)
+            self.assertEqual(srv.atm.inventory, {500: 8, 200: 10, 100: 20})
+
+    def test_a_duplicate_amount_field_is_rejected_not_silently_resolved(self):
+        with RunningServer() as srv:
+            status, body, _ = srv.request("POST", "/withdrawals", raw_body=b'{"amount": 100, "amount": 2700}',
+                                          headers={"Content-Type": "application/json"})
+            self.assertEqual((status, body["error"]), (400, "Duplicate field(s): amount"))
+            self.assertEqual(srv.atm.inventory, {500: 8, 200: 10, 100: 20})
+
+    def test_a_failed_save_answers_503_and_dispenses_nothing(self):
+        with RunningServer() as srv, mock.patch.object(srv.atm, "dispense_with_inventory",
+                                                       side_effect=OSError("disk full")), \
+                self.assertLogs("atm.service", level="ERROR"):
+            status, body, _ = srv.request("POST", "/withdrawals", {"amount": 100})
+        self.assertEqual((status, body["error"]), (503, "Inventory could not be saved; nothing was dispensed"))
+
+    def test_too_many_connections_get_503_instead_of_exhausting_threads(self):
+        with RunningServer() as srv:
+            srv.server.max_connections = 2
+            srv.server._connection_slots = threading.BoundedSemaphore(2)
+            idle = [socket.create_connection(("127.0.0.1", srv.port), timeout=10) for _ in range(2)]
+            try:
+                time.sleep(0.2)  # let the server accept both
+                response = self.raw(srv, b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+                self.assertTrue(response.startswith("HTTP/1.1 503"), response[:60])
+                self.assertIn("Retry-After: 1", response)
+                self.assertIn("X-Content-Type-Options: nosniff", response)
+            finally:
+                for sock in idle:
+                    sock.close()
+            deadline = time.time() + 5
+            while time.time() < deadline:  # the slots are released when the idle connections close
+                status, _, _ = srv.request("GET", "/health")
+                if status == 200:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(status, 200)
+
 
 class ConfigTests(unittest.TestCase):
     def test_defaults(self):

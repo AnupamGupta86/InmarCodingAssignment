@@ -740,6 +740,26 @@ class StateFileTests(unittest.TestCase):
                 with self.assertRaises(InvalidInventoryError):
                     CashDispenser({500: 8}, store=InventoryStore(self.path))
 
+    def test_the_same_denomination_written_twice_is_rejected(self):
+        for content in ('{"inventory": {"500": 1, "0500": 2}}', '{"inventory": {"500": 1, "500": 2}}'):
+            with self.subTest(content=content):
+                self.path.write_text(content, encoding="utf-8")
+                with self.assertRaises(InvalidInventoryError):
+                    InventoryStore(self.path).load()
+
+    def test_a_file_saved_with_a_byte_order_mark_is_accepted(self):
+        self.path.write_bytes(b'\xef\xbb\xbf{"inventory": {"500": 2}}')
+        self.assertEqual(InventoryStore(self.path).load(), {500: 2})
+
+    def test_a_symbolic_link_keeps_pointing_at_the_real_file(self):
+        real = self.folder / "real.json"
+        InventoryStore(real).save({500: 2})
+        link = self.folder / "link.json"
+        link.symlink_to(real)
+        CashDispenser({500: 9}, store=InventoryStore(link)).dispense(500)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(InventoryStore(real).load(), {500: 1})
+
     def test_two_atms_sharing_one_file_never_pay_out_the_same_notes(self):
         # Two CashDispenser objects stand in for two processes: their thread locks are separate,
         # so only the file lock keeps them apart. 20 customers want 2 notes each; 8 notes exist.
@@ -757,6 +777,35 @@ class StateFileTests(unittest.TestCase):
         self.assertEqual(len(paid), 4)
         self.assertEqual(self.saved(), {500: 0})
         self.assertEqual(first.inventory, second.inventory)
+
+
+# ================================================================================================
+# Found by adversarial testing: each test is a bug that used to crash, hang or mislead
+# ================================================================================================
+
+class HostileInputRegressionTests(unittest.TestCase):
+    def test_a_huge_calculation_is_refused_instead_of_exhausting_memory(self):
+        atm = CashDispenser({1: 10 ** 12}, max_withdrawal=10 ** 12)
+        with self.assertRaisesRegex(InvalidAmountError, "too large to work out"):
+            atm.dispense(10 ** 12)
+        self.assertEqual(atm.inventory, {1: 10 ** 12})
+
+    def test_many_denominations_are_refused_instead_of_slowing_every_withdrawal(self):
+        with self.assertRaisesRegex(InvalidInventoryError, "Too many denominations: 51"):
+            CashDispenser({value: 1 for value in range(1, 52)})
+        CashDispenser({value: 1 for value in range(1, 51)})  # 50 is still fine
+
+    def test_a_realistic_large_inventory_is_still_calculated(self):
+        atm = CashDispenser({d: 1000 for d in (1, 2, 5, 10, 20, 50, 100, 200, 500, 2000)})
+        self.assertEqual(sum(v * c for v, c in atm.dispense(199_999).items()), 199_999)
+
+    def test_long_input_is_never_echoed_in_full(self):
+        for value in ("x" * 5000, [[[[0]]]] * 500, 1.5e300):
+            with self.subTest(value=type(value).__name__), self.assertRaises(InvalidAmountError) as raised:
+                Validator.amount(value)
+            self.assertLess(len(str(raised.exception)), 120)
+        with self.assertRaisesRegex(InvalidAmountError, "too large: at most 18 digits"):
+            Validator.amount(10 ** 300)
 
 
 # ================================================================================================

@@ -8,7 +8,8 @@
 
 Several amounts are withdrawn one after another from the same ATM, so you can watch the
 inventory go down. Exit code: 0 = every withdrawal succeeded, 1 = at least one could not be
-dispensed, 2 = invalid input.
+dispensed, 2 = invalid input or a
+state file that cannot be read or saved.
 """
 
 import argparse
@@ -61,7 +62,10 @@ class CommandLine:
             amount = Validator.amount(amount_text)
             notes = atm.dispense(amount)
         except ATMError as error:
-            self._print(f"Invalid amount {amount_text!r}: {error}", error=True)
+            self._print(f"Invalid amount {Validator._shown(amount_text)}: {error}", error=True)
+            return EXIT_INVALID_INPUT
+        except OSError as error:  # the state file could not be saved: nothing was dispensed
+            self._print(f"Cannot save the state file ({error}); nothing was dispensed", error=True)
             return EXIT_INVALID_INPUT
 
         self._print(self.format_withdrawal(amount, notes))

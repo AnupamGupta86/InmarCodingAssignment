@@ -27,6 +27,7 @@ Configuration (environment variables)
 Security controls are listed in the "Security" section of the README.
 """
 
+import contextlib
 import hmac
 import json
 import logging
@@ -206,6 +207,10 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         except ATMError as error:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
+        except OSError:  # the state file could not be saved: the withdrawal did not happen
+            log.exception("cannot save the state file", extra={"request_id": self._request_id})
+            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Inventory could not be saved; nothing was dispensed"})
+            return
 
         if notes is None:
             self._send(HTTPStatus.UNPROCESSABLE_ENTITY, {
@@ -255,7 +260,10 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "Content-Type must be application/json"})
             return None
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
+        except _DuplicateField as error:
+            self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return None
         except (UnicodeDecodeError, ValueError, RecursionError):
             self._send(HTTPStatus.BAD_REQUEST, {"error": "Request body must be valid JSON"})
             return None
@@ -271,6 +279,10 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
                        {"error": "Chunked bodies are not supported; send Content-Length"}, close=True)
             return None
 
+        lengths = {value.strip() for value in self.headers.get_all("Content-Length", [])}
+        if len(lengths) > 1:  # a proxy in front might use the other one: request smuggling
+            self._send(HTTPStatus.BAD_REQUEST, {"error": "Conflicting Content-Length headers"}, close=True)
+            return None
         length_text = self.headers.get("Content-Length")
         if length_text is None:
             self._send(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length header is required"}, close=True)
@@ -345,6 +357,19 @@ class ATMRequestHandler(BaseHTTPRequestHandler):
         """Replace the default unstructured stderr logging (it would print raw request lines)."""
 
 
+class _DuplicateField(ValueError):
+    pass
+
+
+def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """{"amount": 100, "amount": 2700} is ambiguous: a proxy or log may read the other value."""
+    keys = [key for key, _ in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicates:
+        raise _DuplicateField(f"Duplicate field(s): {', '.join(duplicates)}")
+    return dict(pairs)
+
+
 def _as_json_notes(notes: Notes) -> dict[str, int]:
     return {str(value): count for value, count in notes.items()}
 
@@ -357,13 +382,41 @@ class ATMServer(ThreadingHTTPServer):
 
     daemon_threads = True
     request_queue_size = 128  # the default (5) drops connections when many customers arrive at once
+    max_connections = 64      # one thread each; more are answered 503 instead of exhausting threads
 
     def __init__(self, atm: CashDispenser, host: str = "127.0.0.1", port: int = 8080,
                  api_key: str | None = None, version: str = "dev"):
+        self._connection_slots = threading.BoundedSemaphore(self.max_connections)
         super().__init__((host, port), ATMRequestHandler)
         self.atm = atm
         self.api_key = api_key
         self.version = version
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._connection_slots.acquire(blocking=False):
+            self._reject_busy(request)
+            return
+        try:
+            super().process_request(request, client_address)  # starts a thread
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
+
+    def _reject_busy(self, request: Any) -> None:
+        body = json.dumps({"error": "Too many connections; try again shortly"}).encode()
+        headers = "".join(f"{name}: {value}\r\n" for name, value in SECURITY_HEADERS.items())
+        response = ("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 1\r\n"
+                    f"{headers}Connection: close\r\nContent-Length: {len(body)}\r\n\r\n").encode() + body
+        with contextlib.suppress(OSError):
+            request.settimeout(1)
+            request.sendall(response)
+        self.shutdown_request(request)
 
     def server_bind(self) -> None:
         """Bind without a reverse DNS lookup of our own address.
