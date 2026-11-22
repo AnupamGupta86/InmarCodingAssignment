@@ -7,7 +7,7 @@
 3. [Project Structure](#3-project-structure)
 4. [Requirements Coverage](#4-requirements-coverage)
 5. [Installation, Configuration & Usage](#5-installation-configuration--usage)
-6. [Validation & Testing Strategy](#6-validation--testing-strategy)
+6. [Validation & Testing](#6-validation--testing)
 7. [Security & DevSecOps](#7-security--devsecops)
 8. [Troubleshooting & FAQ](#8-troubleshooting--faq)
 
@@ -219,10 +219,10 @@ Alternatives considered:
 | Option | Why it was not chosen |
 |---|---|
 | Greedy (biggest note first) | Fast, but wrong for some inventories (section [2.3.1](#231-why-biggest-note-first-greedy-is-not-enough)) |
-| Try every combination (brute force) | Always correct, but exponential; used only in the tests as an oracle |
-| Integer linear programming solver | Correct and fast, but needs a third-party library (the brief allows the standard library only) |
-| A queue or a single worker thread instead of a lock | Also safe, but more moving parts for the same guarantee |
-| SQLite or another database for the state | Also standard library (SQLite), but a JSON file is readable by eye and the file lock is enough on one machine; a database is the step for several machines |
+| Try every combination (brute force) | Checks every possible count of every note and keeps the valid one with the fewest notes, so it is always correct. But the work multiplies with each denomination: (notes + 1) per denomination. The brief's ATM is 9 × 11 × 21 = 2,079 combinations, but 4 denominations of 2,000 notes each is about 16 trillion. It is used only in the tests (`AgainstBruteForceTests`): on 400 small random ATMs (at most 625 combinations each) it checks that the real algorithm always finds the same minimum |
+| Integer linear programming solver | Correct and fast, but needs a third-party library such as PuLP, Google OR-Tools or SciPy (`scipy.optimize.milp`); the brief allows the standard library only |
+| A queue or a single worker thread instead of a lock | Every withdrawal would be put on a queue and one worker thread would process them one at a time, so two withdrawals could never overlap. That is just as safe, but it adds a background thread to start and stop, a way to send each result back to the caller, and error handling across threads. A lock gives the same one-at-a-time guarantee in a few lines, and it still only protects one process: several processes would need the state-file lock anyway |
+| SQLite or another database for the state | SQLite is in the standard library and would also work: its transactions give the same all-or-nothing update. It was not chosen because the state is tiny (a few denominations and counts): a JSON file can be read and edited by eye, needs no schema or migrations, and the file lock already makes several processes on one machine safe. SQLite also lives on one machine, so it would not help several ATMs either: that step needs a shared database server such as PostgreSQL or Azure SQL, with the update done in one transaction |
 
 ### 2.3 Algorithm: Approach And Complexity
 
@@ -236,54 +236,62 @@ Alternatives considered:
 
 #### 2.3.2 Dynamic Programming ("Bounded Coin Change")
 
-**The idea in one line:** build a small table of *"the fewest notes needed for every amount from 0
-up to the one requested"*, adding one kind of note at a time. Because every combination is
-covered, the last row is always the true minimum, and an empty last row really means the amount
-cannot be paid. "Bounded" means each note can be used only as many times as the ATM holds it.
+**In plain words:** instead of guessing, the program keeps a scorecard. For every amount from ₹0 up
+to the requested amount, the scorecard records *the fewest notes found so far that make exactly
+that amount*. It then takes the ATM's notes **one at a time** and asks, for every amount:
+*"if I add this note to a smaller amount I can already make, do I get this amount with fewer
+notes?"* If yes, it updates the scorecard. When every note has been tried, the scorecard entry for
+the requested amount is the true minimum. If it is still empty, the amount cannot be paid.
 
-**Worked example:** pay ₹60 from `{50: 1, 20: 3}`, the case where greedy fails.
+("Dynamic programming" just means building the answer from answers to smaller amounts.
+"Bounded" means each note can be used only once, because the ATM holds a limited number.)
 
-| After adding | ₹0 | ₹10 | ₹20 | ₹30 | ₹40 | ₹50 | ₹60 |
+**Example:** pay ₹60 from one ₹50 and three ₹20 notes. Greedy takes the ₹50 first and gets stuck.
+
+| Scorecard after adding | ₹0 | ₹10 | ₹20 | ₹30 | ₹40 | ₹50 | ₹60 |
 |---|---|---|---|---|---|---|---|
-| nothing yet | 0 | – | – | – | – | – | – |
-| ₹50 × 1 | 0 | – | – | – | – | 1 | – |
-| a bundle of one ₹20 | 0 | – | 1 | – | – | 1 | – |
-| a bundle of two ₹20 | 0 | – | 1 | – | 2 | 1 | **3** |
+| no notes yet | 0 | – | – | – | – | – | – |
+| the ₹50 note | 0 | – | – | – | – | 1 | – |
+| the 1st ₹20 note | 0 | – | 1 | – | – | 1 | – |
+| the 2nd ₹20 note | 0 | – | 1 | – | 2 | 1 | – |
+| the 3rd ₹20 note | 0 | – | 1 | – | 2 | 1 | **3** |
 
-Each cell is the fewest notes for that amount (– = not possible yet). ₹60 needs 3 notes, and
-walking back through the rows that changed it gives `₹20 × 3`.
+Each number is the fewest notes for that amount; – means "cannot be made yet". The 3rd ₹20 makes
+₹60 from ₹40 (2 notes) + ₹20, so ₹60 needs **3 notes: ₹20 × 3**. The program remembers which note
+improved each entry, so it can trace the answer back.
 
-**Four tricks keep the table small:**
+**Speed-ups used in the code** (the result is the same, only faster):
 
-1. **Work in units of the GCD (Greatest Common Divisor).** Every payable amount is a multiple of
-   the GCD of the notes (100 for ₹500/₹200/₹100), so ₹2,700 becomes 27 rows instead of 2,701, and
-   ₹250 is refused at once.
-2. **Ignore notes that can never be used.** At most `amount ÷ value` notes of one kind can be
-   used, so an ATM reporting a trillion notes is no slower than one with just enough.
-3. **Bundle the notes.** 8 × ₹500 is added as bundles of 1, 2, 4 and 1 notes: 4 rows instead of 8,
-   and the bundles can still make any count from 0 to 8.
-4. **Read the answer back** from the last row, following which bundle improved each amount.
+1. **Count in bigger steps.** All the notes are multiples of ₹100 (their GCD, Greatest Common
+   Divisor), so the scorecard counts in ₹100 steps: 28 entries for ₹2,700 instead of 2,701, and ₹250
+   is refused at once.
+2. **Skip notes that can never be used.** Paying ₹2,700 can never use more than 5 × ₹500, so extra
+   ₹500 notes are ignored. An ATM reporting a trillion notes is no slower.
+3. **Add notes in groups, not one at a time.** 8 × ₹500 is added as groups of 1, 2, 4 and 1 notes:
+   4 steps instead of 8, and the groups can still make any count from 0 to 8. (The code calls
+   these groups *bundles*.)
 
-**Ties:** if two combinations use the same number of notes, the one with higher-value notes wins
-(₹6 from `{4: 1, 3: 2, 2: 1}` gives `4 + 2`, not `3 + 3`), so the result is always the same.
+**Ties:** if two answers need the same number of notes, the one with higher-value notes is chosen
+(₹6 from `{4: 1, 3: 2, 2: 1}` gives `4 + 2`, not `3 + 3`), so the same input always gives the same
+result.
 
 #### 2.3.3 Time And Space Complexity
 
 **In one line:** the work is the size of the table from 2.3.2, which is
-*(number of rows) × (number of bundles)*.
+*(number of scorecard entries) × (number of note groups)*.
 
-- **S, the rows** = amount ÷ GCD. ₹2,700 with ₹500/₹200/₹100 notes → 2,700 ÷ 100 = **27** (plus row 0).
-- **B, the bundles** = a few per denomination, because bundles double in size (1, 2, 4, 8, …).
-  The brief's ATM, using only the notes ₹2,700 could need: ₹500 × 5 → 3 bundles, ₹200 × 10 → 4,
+- **S, the scorecard entries** = amount ÷ GCD. ₹2,700 with ₹500/₹200/₹100 notes → 2,700 ÷ 100 = **27** (plus the entry for ₹0).
+- **B, the note groups** = a few per denomination, because groups double in size (1, 2, 4, 8, …).
+  The brief's ATM, using only the notes ₹2,700 could need: ₹500 × 5 → 3 groups, ₹200 × 10 → 4,
   ₹100 × 20 → 5, so **B = 12**.
 
 | | Complexity | In plain words | The brief's example |
 |---|---|---|---|
-| Time | **O(S × B)** | every bundle visits every row once | 28 × 12 = **336 small steps** |
+| Time | **O(S × B)** | every group updates every entry once | 28 × 12 = **336 small steps** |
 | Space | **O(S × B)** | one byte per cell, to read the answer back | about **336 bytes** |
 | Inventory update | O(D) | one subtraction per denomination (D) | 3 subtractions |
 
-**Why it stays fast:** doubling the notes in the ATM adds only one bundle, not twice the work, and
+**Why it stays fast:** doubling the notes in the ATM adds only one group, not twice the work, and
 notes beyond `amount ÷ value` are ignored, so a trillion notes costs the same as just enough. Paying
 ₹1,99,990 from 7 denominations with 2,000 notes each takes about 0.1 s.
 
@@ -292,8 +300,8 @@ notes beyond `amount ÷ value` are ignored, so a trillion notes costs the same a
 | Approach | Work | Problem |
 |---|---|---|
 | Greedy | D steps | Fast, but sometimes wrong (2.3.1) |
-| Textbook table, one row per note | S × total notes | Correct, but 2,000 notes means 2,000 passes |
-| **This solution (bundled table)** | **S × B** | Correct; 2,000 notes is only 11 bundles |
+| Textbook scorecard, one note at a time | S × total notes | Correct, but 2,000 notes means 2,000 passes |
+| **This solution (grouped notes)** | **S × B** | Correct; 2,000 notes is only 11 groups |
 
 **Safety limit:** a request needing more than 64 million table cells (for example ₹1,99,999 from
 50 denominations starting at ₹1) is refused with a clear message, so one request cannot use
@@ -369,7 +377,7 @@ InmarCodingAssignment/
 | R3 | **Safe inventory:** updated only after the whole amount is allocated; otherwise "Cannot dispense requested amount", `dispense()` returns `None` and nothing changes | `CashDispenser` builds the new inventory as a copy, then swaps it in | `SuccessfulWithdrawalTests`, `FailedWithdrawalTests` |
 | R4 | **Concurrency:** two withdrawals at the same time never pay the same notes | A lock (threads) and the state-file lock (processes) | `ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/test-concurrent-withdrawals.sh` |
 | R5 | **Code:** standard library only; readable and maintainable | No third-party packages (`dependencies = []`); two small modules with type hints; ruff and mypy in CI | CI quality job |
-| R6 | **Submission:** positive and negative tests; README with design, how to run and test, complexity | 173 tests; sections [2](#2-solution-architecture--workflow), [5](#5-installation-configuration--usage) and [6](#6-validation--testing-strategy) | `make test` |
+| R6 | **Submission:** positive and negative tests; README with design, how to run and test, complexity | 173 tests; sections [2](#2-solution-architecture--workflow), [5](#5-installation-configuration--usage) and [6](#6-validation--testing) | `make test` |
 ---
 
 ## 5. Installation, Configuration & Usage
@@ -436,7 +444,7 @@ python3 atm-dispenser/src/cli.py [options] [amounts ...]
 | 10 | Above the withdrawal limit | `python3 atm-dispenser/src/cli.py --max-withdrawal 1000 2700` | `exceeds the limit of 1000`; exit code 2 |
 | 11 | Interactive session | `python3 atm-dispenser/src/cli.py`, then `2700`, `i`, `q` | one result block, then the inventory `₹500 × 3, ₹200 × 9, ₹100 × 20 (total ₹5,300)`, then `Goodbye.` |
 | 12 | Inventory kept between runs | `python3 atm-dispenser/src/cli.py --state-file /tmp/atm.json 2700`, twice | the second run starts from `₹500 × 3, ₹200 × 9, ₹100 × 20`; delete `/tmp/atm.json` to start fresh |
-| 13 | Several processes, one ATM | `./scripts/test-concurrent-withdrawals.sh` | exactly 4 of 10 customers paid, no note paid twice (details in [6.2](#62-testing-strategy)) |
+| 13 | Several processes, one ATM | `./scripts/test-concurrent-withdrawals.sh` | exactly 4 of 10 customers paid, no note paid twice (details in [6.2](#62-testing)) |
 
 ### 5.5 Developer Tools
 
@@ -451,7 +459,7 @@ python3 -m pip install -r atm-dispenser/requirements-dev.txt
 | Make target | Does |
 |---|---|
 | `make test` | All automated tests (no virtual environment needed) |
-| `make concurrency-test` | Several processes withdraw at the same time ([6.2](#62-testing-strategy)) |
+| `make concurrency-test` | Several processes withdraw at the same time ([6.2](#62-testing)) |
 | `make lint coverage security` | ruff (including security rules) and mypy, coverage of at least 70%, pip-audit |
 | `make dev-tools` | Checks the tools are installed in the active Python, and prints the setup steps if not |
 | `make help` | Lists the targets |
@@ -460,7 +468,7 @@ CodeQL and the secret scan run in CI ([Security & DevSecOps](#7-security--devsec
 
 ---
 
-## 6. Validation & Testing Strategy
+## 6. Validation & Testing
 
 ### 6.1 Validation Rules And Messages
 
@@ -496,7 +504,7 @@ subclasses of `ATMError`. ✓ = accepted, ✗ = refused.
 | | Ctrl+C | `Cancelled.`, exit code 130 | Stops quietly |
 | | Output piped into `head -1` | ✓ no error | |
 
-### 6.2 Testing Strategy
+### 6.2 Testing
 
 ```bash
 python3 -m unittest discover -s atm-dispenser -v                       # all 173 tests, about 2 seconds
