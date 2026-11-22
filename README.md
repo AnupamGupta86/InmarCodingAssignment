@@ -236,76 +236,66 @@ Alternatives considered:
 
 #### 2.3.2 Dynamic Programming ("Bounded Coin Change")
 
-**In plain words:** instead of guessing, the program keeps a scorecard. For every amount from ₹0 up
-to the requested amount, the scorecard records *the fewest notes found so far that make exactly
-that amount*. It then takes the ATM's notes **one at a time** and asks, for every amount:
-*"if I add this note to a smaller amount I can already make, do I get this amount with fewer
-notes?"* If yes, it updates the scorecard. When every note has been tried, the scorecard entry for
-the requested amount is the true minimum. If it is still empty, the amount cannot be paid.
+**In short:** build the answer for the requested amount from the answers for smaller amounts.
+"Bounded" means each note can be used only once, because the ATM holds a limited number.
 
-("Dynamic programming" just means building the answer from answers to smaller amounts.
-"Bounded" means each note can be used only once, because the ATM holds a limited number.)
+**How it works, in three steps:**
 
-**Example:** pay ₹60 from one ₹50 and three ₹20 notes. Greedy takes the ₹50 first and gets stuck.
+1. **Make a scorecard** with one entry per amount, from ₹0 up to the requested amount. Each entry
+   holds the fewest notes that make exactly that amount. Start with ₹0 = 0 notes; everything else is
+   empty ("cannot be made yet").
+2. **Add the ATM's notes one by one.** For each note, check every amount: *"smaller amount I can
+   already make + this note = this amount, with fewer notes?"* If yes, update the entry.
+3. **Read the answer.** After the last note, the entry for the requested amount is the minimum.
+   Empty means "Cannot dispense requested amount". The program remembers which note improved each
+   entry, so it can trace back the actual notes.
 
-| Scorecard after adding | ₹0 | ₹10 | ₹20 | ₹30 | ₹40 | ₹50 | ₹60 |
+**Example:** ₹60 from one ₹50 and three ₹20 notes (greedy takes the ₹50 first and gets stuck).
+
+| After adding | ₹0 | ₹10 | ₹20 | ₹30 | ₹40 | ₹50 | ₹60 |
 |---|---|---|---|---|---|---|---|
-| no notes yet | 0 | – | – | – | – | – | – |
-| the ₹50 note | 0 | – | – | – | – | 1 | – |
-| the 1st ₹20 note | 0 | – | 1 | – | – | 1 | – |
-| the 2nd ₹20 note | 0 | – | 1 | – | 2 | 1 | – |
-| the 3rd ₹20 note | 0 | – | 1 | – | 2 | 1 | **3** |
+| start | 0 | – | – | – | – | – | – |
+| ₹50 | 0 | – | – | – | – | 1 | – |
+| 1st ₹20 | 0 | – | 1 | – | – | 1 | – |
+| 2nd ₹20 | 0 | – | 1 | – | 2 | 1 | – |
+| 3rd ₹20 | 0 | – | 1 | – | 2 | 1 | **3** |
 
-Each number is the fewest notes for that amount; – means "cannot be made yet". The 3rd ₹20 makes
-₹60 from ₹40 (2 notes) + ₹20, so ₹60 needs **3 notes: ₹20 × 3**. The program remembers which note
-improved each entry, so it can trace the answer back.
+The 3rd ₹20 turns ₹40 (2 notes) into ₹60 (3 notes), so the answer is **₹20 × 3**.
 
-**Speed-ups used in the code** (the result is the same, only faster):
+**Three speed-ups** (same answer, less work):
 
-1. **Count in bigger steps.** All the notes are multiples of ₹100 (their GCD, Greatest Common
-   Divisor), so the scorecard counts in ₹100 steps: 28 entries for ₹2,700 instead of 2,701, and ₹250
-   is refused at once.
-2. **Skip notes that can never be used.** Paying ₹2,700 can never use more than 5 × ₹500, so extra
-   ₹500 notes are ignored. An ATM reporting a trillion notes is no slower.
-3. **Add notes in groups, not one at a time.** 8 × ₹500 is added as groups of 1, 2, 4 and 1 notes:
-   4 steps instead of 8, and the groups can still make any count from 0 to 8. (The code calls
-   these groups *bundles*.)
+| Speed-up | Idea | Effect for ₹2,700 from the brief's ATM |
+|---|---|---|
+| Count in GCD steps | All notes are multiples of ₹100 (GCD, Greatest Common Divisor), so count in ₹100 steps | 28 entries instead of 2,701; ₹250 is refused at once |
+| Ignore unusable notes | ₹2,700 can never use more than 5 × ₹500 | Extra notes cost nothing, even a trillion |
+| Add notes in groups | Add 8 × ₹500 as groups of 1, 2, 4, 1 (the code calls them *bundles*); they still make any count from 0 to 8 | 4 steps instead of 8 |
 
-**Ties:** if two answers need the same number of notes, the one with higher-value notes is chosen
-(₹6 from `{4: 1, 3: 2, 2: 1}` gives `4 + 2`, not `3 + 3`), so the same input always gives the same
-result.
+**Ties:** when two answers need the same number of notes, the one with higher-value notes wins
+(₹6 from `{4: 1, 3: 2, 2: 1}` → `4 + 2`), so the same input always gives the same result.
 
 #### 2.3.3 Time And Space Complexity
 
-**In one line:** the work is the size of the table from 2.3.2, which is
-*(number of scorecard entries) × (number of note groups)*.
+**In short:** work = scorecard entries × note groups = **O(S × B)**.
 
-- **S, the scorecard entries** = amount ÷ GCD. ₹2,700 with ₹500/₹200/₹100 notes → 2,700 ÷ 100 = **27** (plus the entry for ₹0).
-- **B, the note groups** = a few per denomination, because groups double in size (1, 2, 4, 8, …).
-  The brief's ATM, using only the notes ₹2,700 could need: ₹500 × 5 → 3 groups, ₹200 × 10 → 4,
-  ₹100 × 20 → 5, so **B = 12**.
+- **S** = amount ÷ GCD → ₹2,700 ÷ ₹100 = 27 (28 entries with ₹0).
+- **B** = groups per denomination, which grow slowly because groups double (1, 2, 4, 8, …):
+  ₹500 × 5 → 3, ₹200 × 10 → 4, ₹100 × 20 → 5, so B = 12.
 
-| | Complexity | In plain words | The brief's example |
+| | Complexity | Brief's example | Why |
 |---|---|---|---|
-| Time | **O(S × B)** | every group updates every entry once | 28 × 12 = **336 small steps** |
-| Space | **O(S × B)** | one byte per cell, to read the answer back | about **336 bytes** |
-| Inventory update | O(D) | one subtraction per denomination (D) | 3 subtractions |
+| Time | O(S × B) | 28 × 12 = **336 steps** | each group updates each entry once |
+| Space | O(S × B) | about **336 bytes** | one byte per cell to trace the answer back |
+| Inventory update | O(D) | 3 subtractions | one per denomination |
 
-**Why it stays fast:** doubling the notes in the ATM adds only one group, not twice the work, and
-notes beyond `amount ÷ value` are ignored, so a trillion notes costs the same as just enough. Paying
-₹1,99,990 from 7 denominations with 2,000 notes each takes about 0.1 s.
-
-**Compared with the alternatives:**
-
-| Approach | Work | Problem |
+| Approach | Work | Verdict |
 |---|---|---|
 | Greedy | D steps | Fast, but sometimes wrong (2.3.1) |
-| Textbook scorecard, one note at a time | S × total notes | Correct, but 2,000 notes means 2,000 passes |
-| **This solution (grouped notes)** | **S × B** | Correct; 2,000 notes is only 11 groups |
+| Scorecard, one note at a time | S × total notes | Correct, but 2,000 notes = 2,000 passes |
+| **This solution (grouped notes)** | **S × B** | Correct; 2,000 notes = only 11 groups |
 
-**Safety limit:** a request needing more than 64 million table cells (for example ₹1,99,999 from
-50 denominations starting at ₹1) is refused with a clear message, so one request cannot use
-unlimited memory or time.
+**In practice:** ₹1,99,990 from 7 denominations with 2,000 notes each takes about 0.1 s. A request
+needing more than 64 million cells is refused with a clear message, so no request can use
+unlimited time or memory.
 
 ### 2.4 Workflow: A Withdrawal
 
