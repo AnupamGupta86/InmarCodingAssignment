@@ -57,27 +57,16 @@ Key features:
 
 ### 1.2 Assumptions
 
-- Amounts and denominations are whole numbers of the same currency unit (rupees).
-- The output lists only denominations actually dispensed; the updated inventory lists all of them,
-  including those at 0.
-- The default inventory is the one from the brief, so `python3 atm-dispenser/src/cli.py 2700`
-  reproduces the expected output directly.
-- A single withdrawal is limited to 200,000 by default, as real ATMs limit withdrawals. Change it
-  with `--max-withdrawal`.
-- An amount that cannot be paid with the notes available is a normal outcome, not an error: exit
-  code 1. Invalid input is an error: exit code 2.
-- The inventory is kept in memory by default and resets when the program ends. With
-  `--state-file` it is saved as JSON after every withdrawal, survives restarts and can be shared
-  by several processes. An existing state file wins over `--inventory`.
-- Python **3.14.8** must be installed (`python3 --version`). On Windows, use WSL.
-- "Minimum notes" means the fewest notes in total, not the fewest denominations. When two
-  combinations need the same number of notes, the one with higher-value notes is chosen, so the
-  result is always the same for the same input.
-- One running program is one ATM. The in-process lock protects concurrent withdrawals inside it;
-  several processes on one machine share one stock safely through the same state file (a file
-  lock, proved by `scripts/test-concurrent-withdrawals.sh`). Several machines would need a shared
-  database instead.
-
+- **Money:** whole rupees only. The default inventory is the brief's, so `cli.py 2700` reproduces
+  the expected output; one withdrawal is capped at 200,000 (`--max-withdrawal` to change).
+- **Minimum notes** = fewest notes in total; on a tie, higher-value notes win, so the result is
+  always the same.
+- **Output:** the dispensed notes, then the full updated inventory (including denominations at 0).
+- **Exit codes:** an amount that cannot be paid is a normal outcome (1); invalid input is an error (2).
+- **Inventory storage:** in memory by default (reset on exit). With `--state-file` it is saved as
+  JSON after every withdrawal and shared safely by several processes on one machine (file lock);
+  an existing file wins over `--inventory`. Several machines would need a shared database.
+- **Platform:** Python 3.14.8 on macOS or Linux (WSL on Windows).
 ---
 
 ## 2. Solution Architecture & Workflow
@@ -218,16 +207,12 @@ sequenceDiagram
 
 Design decisions:
 
-- **Separation of responsibilities.** `NoteAllocator` is a pure calculation, so it can be tested
-  exhaustively on its own; `CashDispenser` only keeps the inventory consistent; the CLI only
-  translates input and output.
-- **Concurrency.** The lock covers reading the inventory, allocating and updating it. The new
-  inventory is built as a complete copy and swapped in, so it is never half-updated.
-- **Replaceable allocator.** `CashDispenser(..., allocator=...)` accepts another `NoteAllocator`;
-  the concurrency tests use this to slow allocation down and prove the lock works.
-- **One process = one ATM, unless they share a state file.** Separate processes have separate
-  notes; with one state file they take turns through its file lock and behave as one ATM
-  (`scripts/test-concurrent-withdrawals.sh`).
+| Decision | What it means | Why |
+|---|---|---|
+| Separation of responsibilities | `NoteAllocator` only calculates; `CashDispenser` only keeps the inventory consistent; the CLI only handles input and output | Each part can be tested and changed on its own |
+| Lock plus copy-and-swap | One lock covers reading, allocating and updating; the new inventory is built as a full copy, then swapped in | Concurrent withdrawals never share notes, and the inventory is never half-updated |
+| Replaceable allocator | `CashDispenser(..., allocator=...)` accepts another `NoteAllocator` | The concurrency tests slow allocation down to prove the lock works |
+| One process = one ATM, unless they share a state file | Separate processes have separate notes; with one state file they take turns through its file lock | Several processes behave as one ATM (`scripts/test-concurrent-withdrawals.sh`) |
 
 Alternatives considered:
 
