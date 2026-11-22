@@ -52,7 +52,7 @@ Key features:
 - **Optional persistence:** the inventory can be kept in a JSON file that survives restarts and
   can be shared safely by several processes.
 - **Small and object-oriented:** two source files, standard library only, Python 3.14.8.
-- **Tested like production code:** 166 automated tests and a DevSecOps pipeline for GitHub
+- **Tested like production code:** 165 automated tests and a DevSecOps pipeline for GitHub
   Actions and Azure DevOps.
 
 ### 1.2 Assumptions
@@ -117,11 +117,9 @@ classDiagram
     class ATMError
     class InvalidAmountError
     class InvalidInventoryError
-    class DuplicateKeyError
     ValueError <|-- ATMError
     ATMError <|-- InvalidAmountError
     ATMError <|-- InvalidInventoryError
-    ValueError <|-- DuplicateKeyError
 
     class Validator {
         +WHOLE_NUMBER_TEXT
@@ -161,7 +159,6 @@ classDiagram
         +dispense(amount) Notes or None
         +dispense_with_inventory(amount) tuple
         +inventory : Notes
-        +total_cash : int
     }
 
     class CommandLine {
@@ -183,7 +180,7 @@ classDiagram
 
 | File | Classes | Responsibility |
 |---|---|---|
-| `dispenser.py` | `ATMError`, `InvalidAmountError`, `InvalidInventoryError`, `DuplicateKeyError`, `Validator`, `NoteAllocator`, `InventoryStore`, `CashDispenser` | The business rules: validation, the minimum-notes algorithm, the optional JSON state file, the inventory and its lock |
+| `dispenser.py` | `ATMError`, `InvalidAmountError`, `InvalidInventoryError`, `Validator`, `NoteAllocator`, `InventoryStore`, `CashDispenser` | The business rules: validation, the minimum-notes algorithm, the optional JSON state file, the inventory and its lock |
 | `cli.py` | `CommandLine` | Arguments, output format, exit codes, interactive mode (withdraw, `i` inventory, `q` quit). No business rules. |
 
 **A withdrawal from the command line**
@@ -317,7 +314,7 @@ flowchart LR
     dev["Developer"] -->|git push| repo["GitHub repository"]
     repo --> quality["Quality<br/>ruff · mypy · pip-audit"]
     repo --> sast["Security<br/>CodeQL · gitleaks"]
-    repo --> tests["Tests on Linux and macOS<br/>166 tests · CLI example ·<br/>shared-inventory processes"]
+    repo --> tests["Tests on Linux and macOS<br/>165 tests · CLI example ·<br/>shared-inventory processes"]
     repo --> coverage["Coverage<br/>at least 70%"]
     quality --> ok(["All pass: change accepted"])
     sast --> ok
@@ -335,7 +332,7 @@ InmarCodingAssignment/
 │   ├── src/
 │   │   ├── dispenser.py             ATM core: Validator, NoteAllocator, InventoryStore, CashDispenser, errors
 │   │   └── cli.py                   command line: CommandLine
-│   ├── tests/                       166 unittest tests, one file per source file
+│   ├── tests/                       165 unittest tests, one file per source file
 │   │   ├── test_dispenser.py        validation, algorithm, ATM, state file, concurrency, property tests
 │   │   └── test_cli.py              CommandLine
 │   ├── pyproject.toml               version, Python version and tool configuration
@@ -364,7 +361,7 @@ InmarCodingAssignment/
 | R9 | Standard library only | No third-party packages (`dependencies = []`): `argparse`, `threading`, `fcntl`, `json`, `math`, `tempfile`, `unittest` and other built-in modules |
 | R10 | Validation messages | [Section 6.1](#61-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
 | R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/shared-inventory-test.sh` |
-| R12 | Positive and negative test cases | 166 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
+| R12 | Positive and negative test cases | 165 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
 | R13 | README: design, how to run and test, complexity | Sections [2](#2-solution-architecture--workflow) (design and [complexity](#233-time-and-space-complexity)), [5](#5-installation-configuration--usage) (how to run) and [6.2](#62-testing-strategy) (tests) |
 | R14 | Readable, maintainable code | Two small object-oriented modules with type hints; ruff and mypy checked in CI |
 
@@ -382,7 +379,7 @@ run the program or the tests.
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser        # 166 tests
+python3 -m unittest discover -s atm-dispenser        # 165 tests
 python3 atm-dispenser/src/cli.py 2700                # example from the brief
 ```
 
@@ -398,7 +395,7 @@ python3 atm-dispenser/src/cli.py 2700                # example from the brief
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
 cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 166 tests ... OK
+python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 165 tests ... OK
 ```
 
 No `PYTHONPATH` to set: the program finds its own modules, and the tests add `src/` to the path
@@ -515,7 +512,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 ### 6.2 Testing Strategy
 
 ```bash
-python3 -m unittest discover -s atm-dispenser -v                       # all 166 tests, about 2 seconds
+python3 -m unittest discover -s atm-dispenser -v                       # all 165 tests, about 2 seconds
 python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one test file (test_dispenser / test_cli)
 ./scripts/shared-inventory-test.sh                                     # several real processes, one ATM
 ```
@@ -564,7 +561,7 @@ DevOps. Python is pinned to **3.14.8** in both.
  quality              ruff (incl. the Bandit security rules), mypy, pip-audit
  codeql               CodeQL security analysis (security-extended queries); any finding fails
  secrets              gitleaks over the full git history
- test (Linux, macOS)  166 tests, the brief's example through the CLI, shared-inventory processes
+ test (Linux, macOS)  165 tests, the brief's example through the CLI, shared-inventory processes
  coverage             fails below 70 %
 ```
 

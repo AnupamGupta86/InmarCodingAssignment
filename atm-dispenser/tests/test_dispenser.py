@@ -256,6 +256,10 @@ class ParseInventoryTests(unittest.TestCase):
 find_minimum_notes = NoteAllocator().find_minimum_notes
 
 
+def total_cash(atm):
+    return sum(value * count for value, count in atm.inventory.items())
+
+
 def paid(notes):
     return sum(value * count for value, count in notes.items())
 
@@ -436,15 +440,13 @@ class SuccessfulWithdrawalTests(unittest.TestCase):
         atm = CashDispenser({500: 2, 100: 3})
         self.assertEqual(atm.dispense(1300), {500: 2, 100: 3})
         self.assertEqual(atm.inventory, {500: 0, 100: 0})
-        self.assertEqual(atm.total_cash, 0)
+        self.assertEqual(total_cash(atm), 0)
 
     def test_other_denominations_are_supported(self):
         atm = CashDispenser({2000: 2, 50: 10, 20: 10, 10: 5, 1: 9})
         self.assertEqual(atm.dispense(4093), {2000: 2, 50: 1, 20: 2, 1: 3})
         self.assertEqual(atm.inventory, {2000: 0, 50: 9, 20: 8, 10: 5, 1: 6})
 
-    def test_total_cash(self):
-        self.assertEqual(CashDispenser({500: 8, 200: 10, 100: 20}).total_cash, 8000)
 
 
 class FailedWithdrawalTests(unittest.TestCase):
@@ -887,7 +889,7 @@ class DispenserPropertyTests(unittest.TestCase):
             atm = CashDispenser(start)
             paid_out = dict.fromkeys(start, 0)
             for _ in range(15):
-                amount = random_value(rng) if rng.random() < 0.3 else rng.randint(1, max(1, atm.total_cash))
+                amount = random_value(rng) if rng.random() < 0.3 else rng.randint(1, max(1, total_cash(atm)))
                 before = atm.inventory
                 try:
                     notes = atm.dispense(amount)

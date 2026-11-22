@@ -20,7 +20,6 @@ ignore = ["UP037"]
 
 [tool.mypy]
 files = ["src"]
-ignore_missing_imports = true
 check_untyped_defs = true
 
 [tool.coverage.run]

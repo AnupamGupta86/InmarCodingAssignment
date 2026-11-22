@@ -1,16 +1,6 @@
-"""Command-line front end for the ATM.
-
-    python3 atm-dispenser/src/cli.py 2700                         # default inventory from the brief
-    python3 atm-dispenser/src/cli.py --inventory "{ 500: 8, 200: 10, 100: 20 }" 2700 600
-    python3 atm-dispenser/src/cli.py --inventory "4:1, 3:2" 6
-    python3 atm-dispenser/src/cli.py --state-file atm.json 2700      # inventory kept in atm.json
-    python3 atm-dispenser/src/cli.py                              # interactive (i = inventory, q = quit)
-
-Several amounts are withdrawn one after another from the same ATM, so you can watch the
-inventory go down.
-
-Exit code: 0 = every withdrawal succeeded, 1 = at least one could not be dispensed,
-2 = invalid input, or a state file that cannot be read or saved.
+"""Command-line front end for the ATM: python3 atm-dispenser/src/cli.py --help shows the options,
+examples and exit codes. Several amounts are withdrawn one after another from the same ATM, so
+you can watch the inventory go down.
 """
 
 import argparse
@@ -101,7 +91,7 @@ class CommandLine:
     def run_interactive(self, atm: CashDispenser, lines: Iterable[str]) -> int:
         """Read one amount per line until 'q', 'quit', 'exit', end of input or Ctrl+C.
 
-        'i' or 'inventory' shows the notes currently in the ATM without withdrawing anything.
+        'i' or 'inventory' shows the notes in the ATM; 'h', 'help' or '?' lists the commands.
         """
         worst = EXIT_OK
         self._print(INTERACTIVE_HELP)
@@ -225,7 +215,8 @@ class CommandLine:
     @staticmethod
     def _amount_hint(amount_text: str) -> str:
         """A nudge for amounts written the way people write money: "2,700", "₹2700", "2700/-"."""
-        if any(character.isdigit() for character in amount_text) and any(mark in amount_text for mark in ",₹/"):
+        has_digits = any(character.isdigit() for character in amount_text)
+        if has_digits and any(mark in amount_text for mark in ",₹/"):
             return ". Type the amount as digits only, for example 2700"
         return ""
 

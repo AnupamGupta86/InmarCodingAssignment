@@ -34,7 +34,6 @@ DEFAULT_MAX_WITHDRAWAL = 200_000
 Notes = dict[int, int]   # {denomination: number of notes}
 
 
-
 # Errors ------------------------------------------------------------------------------------
 
 class ATMError(ValueError):
@@ -48,21 +47,6 @@ class InvalidAmountError(ATMError):
 class InvalidInventoryError(ATMError):
     """The ATM inventory is empty or contains an invalid denomination or note count."""
 
-
-class DuplicateKeyError(ValueError):
-    """A JSON object names the same key twice."""
-
-
-def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """json.loads hook: {"amount": 100, "amount": 2700} is ambiguous, so refuse it.
-
-    By default the last value would silently win, while a proxy or a log may read the first.
-    """
-    keys = [key for key, _ in pairs]
-    duplicates = sorted({key for key in keys if keys.count(key) > 1})
-    if duplicates:
-        raise DuplicateKeyError(f"Duplicate field(s): {', '.join(duplicates)}")
-    return dict(pairs)
 
 
 # Validation --------------------------------------------------------------------------------
@@ -155,6 +139,16 @@ class Validator:
             inventory[denomination] = count
         return cls.inventory(inventory)
 
+    @classmethod
+    def whole_number(cls, text: str, what: str) -> int:
+        """Parse a denomination or note count written as text. Raises InvalidInventoryError."""
+        text = text.strip()
+        if not cls.WHOLE_NUMBER_TEXT.match(text):
+            raise InvalidInventoryError(f"Invalid {what} {text[:20]!r}: must be a whole number")
+        if len(text.lstrip("+-")) > cls.MAX_DIGITS:
+            raise InvalidInventoryError(f"Invalid {what}: too large (at most {cls.MAX_DIGITS} digits)")
+        return int(text)
+
     @staticmethod
     def preview(value, limit: int = 30) -> str:
         """The value as it appears in an error message, cut short so long input is never echoed."""
@@ -186,16 +180,6 @@ class Validator:
             return True
         except ValueError:
             return False
-
-    @classmethod
-    def whole_number(cls, text: str, what: str) -> int:
-        """Parse a denomination or note count written as text. Raises InvalidInventoryError."""
-        text = text.strip()
-        if not cls.WHOLE_NUMBER_TEXT.match(text):
-            raise InvalidInventoryError(f"Invalid {what} {text[:20]!r}: must be a whole number")
-        if len(text.lstrip("+-")) > cls.MAX_DIGITS:
-            raise InvalidInventoryError(f"Invalid {what}: too large (at most {cls.MAX_DIGITS} digits)")
-        return int(text)
 
 
 # The minimum-notes algorithm ---------------------------------------------------------------
@@ -364,7 +348,7 @@ class InventoryStore:
         """Read and validate the saved inventory. Raises InvalidInventoryError if the file is bad."""
         try:
             text = self.path.read_text(encoding="utf-8-sig")  # -sig: also accepts a Windows Notepad file
-            data = json.loads(text, object_pairs_hook=reject_duplicate_keys)
+            data = json.loads(text, object_pairs_hook=self._without_duplicate_keys)
         except (OSError, ValueError) as error:
             raise InvalidInventoryError(f"Cannot read the state file {self.path}: {error}") from None
         if not isinstance(data, dict) or not isinstance(data.get("inventory"), dict):
@@ -384,6 +368,16 @@ class InventoryStore:
                 )
             notes[denomination] = count
         return Validator.inventory(notes)
+
+    @staticmethod
+    def _without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        """json.loads hook: {"500": 8, "500": 2} is ambiguous (by default the last value would
+        silently win), so it is refused."""
+        keys = [key for key, _ in pairs]
+        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicates:
+            raise ValueError(f"the key(s) {', '.join(duplicates)} appear more than once")
+        return dict(pairs)
 
     def save(self, notes: Notes) -> None:
         """Write the inventory atomically: readers see either the old file or the new one."""
@@ -475,11 +469,6 @@ class CashDispenser:
         with self._lock, self._state_file_lock():
             self._reload_from_state_file()
             return dict(self._notes)
-
-    @property
-    def total_cash(self) -> int:
-        """The total value of all notes currently in the machine."""
-        return sum(denomination * count for denomination, count in self.inventory.items())
 
     def _state_file_lock(self) -> contextlib.AbstractContextManager[None]:
         """The lock shared with other processes using the same state file (nothing without one)."""
