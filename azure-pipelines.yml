@@ -55,8 +55,8 @@ stages:
           - script: python3 src/cli.py --inventory "500:8, 200:10, 100:20" 2700
             workingDirectory: atm-dispenser
             displayName: CLI - example from the brief
-          - script: ./scripts/shared-inventory-test.sh
-            displayName: Several processes sharing one inventory file never pay the same notes
+          - script: ./scripts/test-concurrent-withdrawals.sh
+            displayName: Concurrent withdrawals from several processes never pay the same notes
       - job: Coverage
         pool: {vmImage: ubuntu-latest}
         steps:

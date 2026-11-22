@@ -1,4 +1,4 @@
-.PHONY: help test shared-inventory dev-tools coverage lint security
+.PHONY: help test concurrency-test dev-tools coverage lint security
 
 APP := atm-dispenser
 IN_APP := cd $(APP) &&
@@ -9,8 +9,8 @@ help:            ## list targets
 test:            ## run all automated tests
 	$(IN_APP) python3 -m unittest discover -v
 
-shared-inventory: ## several processes share one inventory file and never pay the same notes
-	./scripts/shared-inventory-test.sh
+concurrency-test: ## several processes withdraw at the same time and never pay the same notes
+	./scripts/test-concurrent-withdrawals.sh
 
 dev-tools:       ## check that the dev tools are installed in the active Python
 	@python3 -c "import ruff, mypy, coverage, pip_audit" 2>/dev/null || { \

@@ -75,7 +75,7 @@ Key features:
   result is always the same for the same input.
 - One running program is one ATM. The in-process lock protects concurrent withdrawals inside it;
   several processes on one machine share one stock safely through the same state file (a file
-  lock, proved by `scripts/shared-inventory-test.sh`). Several machines would need a shared
+  lock, proved by `scripts/test-concurrent-withdrawals.sh`). Several machines would need a shared
   database instead.
 
 ---
@@ -227,7 +227,7 @@ Design decisions:
   the concurrency tests use this to slow allocation down and prove the lock works.
 - **One process = one ATM, unless they share a state file.** Separate processes have separate
   notes; with one state file they take turns through its file lock and behave as one ATM
-  (`scripts/shared-inventory-test.sh`).
+  (`scripts/test-concurrent-withdrawals.sh`).
 
 Alternatives considered:
 
@@ -314,7 +314,7 @@ flowchart LR
     dev["Developer"] -->|git push| repo["GitHub repository"]
     repo --> quality["Quality<br/>ruff · mypy · pip-audit"]
     repo --> sast["Security<br/>CodeQL · gitleaks"]
-    repo --> tests["Tests on Linux and macOS<br/>165 tests · CLI example ·<br/>shared-inventory processes"]
+    repo --> tests["Tests on Linux and macOS<br/>165 tests · CLI example ·<br/>concurrent-withdrawals test"]
     repo --> coverage["Coverage<br/>at least 70%"]
     quality --> ok(["All pass: change accepted"])
     sast --> ok
@@ -338,7 +338,7 @@ InmarCodingAssignment/
 │   ├── pyproject.toml               version, Python version and tool configuration
 │   └── requirements-dev.txt         pinned dev tools (not needed to run the program)
 ├── scripts/
-│   └── shared-inventory-test.sh     several processes share one state file and never pay the same notes
+│   └── test-concurrent-withdrawals.sh  several processes withdraw at the same time and never pay the same notes
 ├── .github/workflows/ci.yml         CI with DevSecOps gates (on every push and weekly)
 ├── azure-pipelines.yml              the same pipeline for Azure DevOps
 └── Makefile                         shortcuts for the commands below
@@ -360,7 +360,7 @@ InmarCodingAssignment/
 | R8 | Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
 | R9 | Standard library only | No third-party packages (`dependencies = []`): `argparse`, `threading`, `fcntl`, `json`, `math`, `tempfile`, `unittest` and other built-in modules |
 | R10 | Validation messages | [Section 6.1](#61-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
-| R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/shared-inventory-test.sh` |
+| R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/test-concurrent-withdrawals.sh` |
 | R12 | Positive and negative test cases | 165 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
 | R13 | README: design, how to run and test, complexity | Sections [2](#2-solution-architecture--workflow) (design and [complexity](#233-time-and-space-complexity)), [5](#5-installation-configuration--usage) (how to run) and [6.2](#62-testing-strategy) (tests) |
 | R14 | Readable, maintainable code | Two small object-oriented modules with type hints; ruff and mypy checked in CI |
@@ -390,11 +390,11 @@ python3 atm-dispenser/src/cli.py 2700                # example from the brief
 | The program and the tests | Python 3.14.8 (macOS, Linux; on Windows use WSL) | `python3 --version` |
 | Optional dev checks ([5.4](#54-optional-quality-and-security-checks)) | ruff, mypy, coverage, pip-audit in a virtual environment (`.venv`) | `source .venv/bin/activate && ruff --version` |
 
-### 5.2 Get The Code And Run The Tests
+### 5.2 Run The Tests
+
+After cloning (see the Quick start), from the repository root:
 
 ```bash
-git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git
-cd InmarCodingAssignment
 python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 165 tests ... OK
 ```
 
@@ -407,17 +407,18 @@ themselves.
 |---|---|---|---|
 | 1 | Example from the brief | `python3 atm-dispenser/src/cli.py 2700` | `✓ Dispensed: ₹500 × 5, ₹200 × 1 (Total notes dispensed: 6)`; `Updated inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total ₹5,300)`; exit code 0 |
 | 2 | Greedy would fail | `python3 atm-dispenser/src/cli.py --inventory "4:1, 3:2" 6` | `₹3 × 2` |
-| 3 | Limited notes | `python3 atm-dispenser/src/cli.py --inventory "500:2, 200:10, 100:20" 2400` | `₹500 × 2, ₹200 × 7` |
-| 4 | Cannot dispense | `python3 atm-dispenser/src/cli.py 250` | `✗ Cannot dispense requested amount`; `Inventory unchanged: …`; exit code 1 |
-| 5 | More than the ATM holds | `python3 atm-dispenser/src/cli.py 9000` | `Cannot dispense requested amount`; exit code 1 |
-| 6 | Several withdrawals in a row | `python3 atm-dispenser/src/cli.py 2700 2700 800` | the inventory goes down after each one |
-| 7 | Zero / negative / text / decimal | `python3 atm-dispenser/src/cli.py 0`, `… -- -5`, `… abc`, `… 12.5` | clear error message; exit code 2 |
-| 8 | Invalid inventory | `python3 atm-dispenser/src/cli.py --inventory "{}" 100`, `--inventory "500:-1"`, `--inventory "0:5"` | `empty`, `cannot be negative`, `Invalid denomination` |
-| 9 | Above the withdrawal limit | `python3 atm-dispenser/src/cli.py --max-withdrawal 1000 2700` | `exceeds the limit of 1000`; exit code 2 |
-| 10 | Interactive | `python3 atm-dispenser/src/cli.py`, then type amounts at the `>` prompt; `h` for help, `q` (or Ctrl+C) to quit | one result block per amount; `Goodbye.` at the end |
-| 11 | Check the inventory (interactive) | `python3 atm-dispenser/src/cli.py`, type `2700`, then `i` | `ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total ₹5,300)`; nothing withdrawn |
-| 12 | Inventory kept between runs | `python3 atm-dispenser/src/cli.py --state-file /tmp/atm.json 2700`, then the same command again | second run starts from `₹500 × 3, ₹200 × 9, ₹100 × 20`; delete `/tmp/atm.json` to start fresh |
-| 13 | Several processes share one ATM | `./scripts/shared-inventory-test.sh` (or `make shared-inventory`) | without a state file 10 processes pay 20 notes from 8; with one, exactly 4 are paid and 0 notes remain |
+| 3 | Any denominations, not just ₹500/₹200/₹100 | `python3 atm-dispenser/src/cli.py --inventory "2000:2, 50:4, 7:3" 2064` | `₹2,000 × 1, ₹50 × 1, ₹7 × 2` |
+| 4 | Limited notes | `python3 atm-dispenser/src/cli.py --inventory "500:2, 200:10, 100:20" 2400` | `₹500 × 2, ₹200 × 7` |
+| 5 | Cannot dispense | `python3 atm-dispenser/src/cli.py 250` | `✗ Cannot dispense requested amount`; `Inventory unchanged: …`; exit code 1 |
+| 6 | More than the ATM holds | `python3 atm-dispenser/src/cli.py 9000` | `Cannot dispense requested amount`; exit code 1 |
+| 7 | Several withdrawals in a row | `python3 atm-dispenser/src/cli.py 2700 2700 800` | the inventory goes down after each one |
+| 8 | Zero / negative / text / decimal | `python3 atm-dispenser/src/cli.py 0`, `… -- -5`, `… abc`, `… 12.5` | clear error message; exit code 2 |
+| 9 | Invalid inventory | `python3 atm-dispenser/src/cli.py --inventory "{}" 100`, `--inventory "500:-1"`, `--inventory "0:5"` | `empty`, `cannot be negative`, `Invalid denomination` |
+| 10 | Above the withdrawal limit | `python3 atm-dispenser/src/cli.py --max-withdrawal 1000 2700` | `exceeds the limit of 1000`; exit code 2 |
+| 11 | Interactive | `python3 atm-dispenser/src/cli.py`, then type amounts at the `>` prompt; `h` for help, `q` (or Ctrl+C) to quit | one result block per amount; `Goodbye.` at the end |
+| 12 | Check the inventory (interactive) | `python3 atm-dispenser/src/cli.py`, type `2700`, then `i` | `ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total ₹5,300)`; nothing withdrawn |
+| 13 | Inventory kept between runs | `python3 atm-dispenser/src/cli.py --state-file /tmp/atm.json 2700`, then the same command again | second run starts from `₹500 × 3, ₹200 × 9, ₹100 × 20`; delete `/tmp/atm.json` to start fresh |
+| 14 | Several processes share one ATM | `./scripts/test-concurrent-withdrawals.sh` (or `make concurrency-test`) | without a state file 10 processes pay 20 notes from 8; with one, exactly 4 are paid and 0 notes remain |
 
 Check an exit code with `echo $?` straight after the command.
 
@@ -437,19 +438,18 @@ CodeQL and the secret scan run in CI (see [Security & DevSecOps](#7-security--de
 
 ### 5.5 Command-Line Reference
 
-| What | Command |
+`python3 atm-dispenser/src/cli.py [options] [amounts ...]`. Without amounts it starts
+interactive mode. Run it with `--help` for examples; [5.3](#53-validate-the-use-cases-with-the-command-line) shows each use case.
+
+| Option or command | Meaning |
 |---|---|
-| One withdrawal (default inventory from the brief) | `python3 atm-dispenser/src/cli.py 2700` |
-| Your own inventory | `python3 atm-dispenser/src/cli.py --inventory "500:8, 200:10, 100:20" 2700` |
-| The brief's format also works | `python3 atm-dispenser/src/cli.py --inventory "{ 500: 8, 200: 10, 100: 20 }" 2700` |
-| Several withdrawals on the same ATM, in order | `python3 atm-dispenser/src/cli.py 2700 2700 800` |
-| Interactive mode (type amounts, `q` to quit) | `python3 atm-dispenser/src/cli.py` |
-| Show the current inventory and total cash (interactive mode) | type `i` or `inventory` |
-| List the interactive commands | type `h`, `help` or `?` |
-| Keep the inventory in a JSON file (survives restarts, shared by processes); the first line says whether the file was created or the saved notes are used | `python3 atm-dispenser/src/cli.py --state-file atm.json 2700` |
-| A negative amount (`--` stops it being read as an option) | `python3 atm-dispenser/src/cli.py -- -5` |
-| Change the per-withdrawal limit (default 200000) | `python3 atm-dispenser/src/cli.py --max-withdrawal 500000 300000` |
-| Help, with examples and exit codes | `python3 atm-dispenser/src/cli.py --help` |
+| `amounts ...` | Amounts to withdraw, one after another from the same ATM |
+| `--inventory "500:8, 200:10, 100:20"` | Notes in the ATM (the brief's `"{ 500: 8, 200: 10, 100: 20 }"` also works); default: the brief's inventory |
+| `--max-withdrawal 500000` | Largest amount per withdrawal (default 200000) |
+| `--state-file atm.json` | Keep the inventory in a JSON file: survives restarts, shared by processes. The first line says whether the file was created or the saved notes are used |
+| `-- -5` | `--` stops a negative amount being read as an option |
+| `--help` | Options, examples and exit codes |
+| `i` / `h` / `q` (interactive) | Show the inventory and total cash / list the commands / quit (also Ctrl+C) |
 
 **Exit codes** (with several amounts the worst one wins):
 
@@ -464,7 +464,7 @@ CodeQL and the secret scan run in CI (see [Security & DevSecOps](#7-security--de
 | Target | Does |
 |---|---|
 | `make test` | all automated tests |
-| `make shared-inventory` | `scripts/shared-inventory-test.sh` |
+| `make concurrency-test` | `scripts/test-concurrent-withdrawals.sh`: several processes withdraw at the same time |
 | `make dev-tools` | check the dev tools are installed in the active Python (prints setup steps if not) |
 | `make lint coverage security` | dev checks (inside the virtual environment from [5.4](#54-optional-quality-and-security-checks)) |
 | `make help` | list the targets |
@@ -514,7 +514,7 @@ subclasses of `ATMError`. Decisions worth calling out:
 ```bash
 python3 -m unittest discover -s atm-dispenser -v                       # all 165 tests, about 2 seconds
 python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one test file (test_dispenser / test_cli)
-./scripts/shared-inventory-test.sh                                     # several real processes, one ATM
+./scripts/test-concurrent-withdrawals.sh                               # several real processes, one ATM
 ```
 
 | Type | Where | What it proves |
@@ -524,7 +524,7 @@ python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one tes
 | **Property / fuzz** | `test_dispenser.ValidationFuzzTests`, `DispenserPropertyTests` | Thousands of random and hostile inputs (unicode digits, NaN, huge numbers): validation only returns clean values or our own error; invariants hold over random withdrawal sequences |
 | **Concurrency** | `test_dispenser.ConcurrentWithdrawalTests` | 20 threads competing for 8 notes; a deliberately slowed `NoteAllocator` to force a race; a **control test proving the race happens without the lock** |
 | **State file (persistence)** | `test_dispenser.StateFileTests`, `test_cli.StateFileTests` | Created from the starting inventory; survives restarts; existing file wins; failed withdrawal or failed save changes nothing; no temporary files left; corrupt files rejected; **two ATMs sharing one file never pay the same notes** (and the test fails if the file lock is removed) |
-| **Several processes** | `scripts/shared-inventory-test.sh` (CI) | 10 real `python3` processes at once: without a state file they pay 20 notes from 8; with a shared one exactly 4 are paid |
+| **Several processes** | `scripts/test-concurrent-withdrawals.sh` (CI) | 10 real `python3` processes at once: without a state file they pay 20 notes from 8; with a shared one exactly 4 are paid |
 | **Adversarial regression** | `test_dispenser.HostileInputRegressionTests`, `StateFileTests`, `test_cli.StateFileTests` | One test per problem found by trying to break the code: huge calculations refused (no `MemoryError`), too many denominations, long input not echoed, failed save reported clearly, duplicate denominations, byte-order mark and symbolic link in the state file |
 | **CLI** | `test_cli.py` | Output format, exit codes, withdrawal limit, interactive mode, the `i` inventory command and Ctrl+C, `python3 atm-dispenser/src/cli.py` run as a real process |
 | **User friendliness** | `test_cli.FriendlinessTests`, `StateFileTests` | Hint for amounts typed like `2,700` or `₹2700`; `h`/`help`/`?`; a `>` prompt only in a real terminal; `Goodbye.`; examples in `--help`; a clear message when a saved state file is used and `--inventory` is ignored |
@@ -554,18 +554,12 @@ python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one tes
 
 ### 7.3 CI/CD Pipeline
 
-Every push runs `.github/workflows/ci.yml`; `azure-pipelines.yml` has the same checks for Azure
-DevOps. Python is pinned to **3.14.8** in both.
+The pipeline and its stages are shown in [2.5](#25-workflow-continuous-integration). In addition:
 
-```
- quality              ruff (incl. the Bandit security rules), mypy, pip-audit
- codeql               CodeQL security analysis (security-extended queries); any finding fails
- secrets              gitleaks over the full git history
- test (Linux, macOS)  165 tests, the brief's example through the CLI, shared-inventory processes
- coverage             fails below 70 %
-```
-
-- **Platforms:** tests run on Linux and macOS with `python3`; Windows users use WSL.
+- The same checks run on GitHub Actions (`.github/workflows/ci.yml`) and Azure DevOps
+  (`azure-pipelines.yml`), with Python pinned to **3.14.8** in both.
+- Every check blocks the change when it fails, including CodeQL findings.
+- Tests run on Linux and macOS; Windows users use WSL.
 - The pipeline also runs every Monday, so newly published vulnerabilities in the code or the dev
   tools are found even without a push.
 
@@ -581,7 +575,7 @@ DevOps. Python is pinned to **3.14.8** in both.
 | `quote>` prompt or `command not found: #` after pasting a command (macOS zsh) | zsh does not ignore `# comments` by default: press Ctrl+C, run `setopt interactivecomments` (add it to `~/.zshrc` to keep it), paste again |
 | `error: externally-managed-environment` from `pip install` | Install the dev tools in a virtual environment ([5.4](#54-optional-quality-and-security-checks)) |
 | `mypy: command not found` or `Dev tools not found` from `make` | Activate the virtual environment first: `source .venv/bin/activate` |
-| `Permission denied` running `./scripts/shared-inventory-test.sh` | `chmod +x scripts/shared-inventory-test.sh`, or run it with `bash scripts/shared-inventory-test.sh` |
+| `Permission denied` running `./scripts/test-concurrent-withdrawals.sh` | `chmod +x scripts/test-concurrent-withdrawals.sh`, or run it with `bash scripts/test-concurrent-withdrawals.sh` |
 | `Cannot use the state file` / `Cannot read the state file` | The folder must exist and be writable; delete a corrupt file to start again from `--inventory` |
 | `Amount must be a number` for `2,700` or `₹2700` | Type digits only: `2700` |
 | `--inventory is ignored: the saved notes are used` | The state file already exists and wins; delete it (and its `.lock` file) to start from `--inventory` again |
@@ -605,45 +599,7 @@ python3 atm-dispenser/src/cli.py --state-file atm.json 2700       # kept between
 - With two ₹500 notes, the fewest possible is 9 notes: ₹500 × 2 + ₹200 × 7.
 - With the default inventory (8 × ₹500), ₹2400 is paid as ₹500 × 4 + ₹200 × 2 (6 notes).
 
-**Q3. Where is the exit code?**
-
-Programs return it to the shell instead of printing it. Check it straight after the command:
-
-```bash
-python3 atm-dispenser/src/cli.py 9000
-echo $?        # 1
-```
-
-| Code | Meaning |
-|---|---|
-| `0` | Dispensed |
-| `1` | Cannot dispense requested amount |
-| `2` | Invalid input, or a state file that cannot be read or saved |
-
-**Q4. Are only ₹500, ₹200 and ₹100 supported?**
-
-No. Any positive whole-number denominations work; ₹500/₹200/₹100 is only the default from the brief.
-
-```bash
-python3 atm-dispenser/src/cli.py --inventory "2000:2, 50:4, 7:3" 2064    # ₹2,000 × 1, ₹50 × 1, ₹7 × 2
-```
-
-**Q5. What is the GCD?**
-
-- GCD = **Greatest Common Divisor** of the denominations: 100 for ₹500/₹200/₹100.
-- Every payable amount is a multiple of it, so ₹2700 is worked out as 27 units and ₹250 is
-  rejected at once.
-- See [2.3.2](#232-dynamic-programming-bounded-coin-change).
-
-**Q6. Can the withdrawal limit be changed?**
-
-Yes. The default is 200000 per withdrawal; change it with `--max-withdrawal`:
-
-```bash
-python3 atm-dispenser/src/cli.py --max-withdrawal 500000 300000
-```
-
-**Q7. How is the ATM refilled?**
+**Q3. How is the ATM refilled?**
 
 Run it with the new counts (`--inventory`), or replace the state file while no withdrawal is
 running. There is deliberately no "add notes" command: in a real ATM the counts come from the
