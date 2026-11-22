@@ -1,5 +1,5 @@
-# Tests and security checks must pass before the image is built.
-# The weekly run re-scans the code and the base image for newly published vulnerabilities.
+# Lint, type check, security scans, tests on Linux and macOS, and coverage, on every push.
+# The weekly run re-scans the code and the dev tools for newly published vulnerabilities.
 name: CI
 
 on:
@@ -18,7 +18,6 @@ concurrency:
 
 env:
   PYTHONIOENCODING: utf-8
-  TRIVY_IMAGE: aquasec/trivy:0.58.1
 
 jobs:
   quality:
@@ -83,13 +82,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]   # Windows users run the Docker image
+        os: [ubuntu-latest, macos-latest]   # on Windows, use WSL
         python-version: ["3.14.8"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with: {python-version: "${{ matrix.python-version }}"}
-      - name: Unit, integration, concurrency and fuzz tests
+      - name: Unit, concurrency, property and CLI tests
         run: python3 -m unittest discover -v
       - name: CLI - example from the brief
         run: python3 src/cli.py --inventory "500:8, 200:10, 100:20" 2700
@@ -110,84 +109,3 @@ jobs:
       - run: coverage xml
       - uses: actions/upload-artifact@v6
         with: {name: coverage, path: atm-dispenser/coverage.xml}
-
-  container:
-    name: Container build, scan, test, DAST
-    runs-on: ubuntu-latest
-    needs: [quality, codeql, secrets, test, coverage]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Dockerfile lint (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
-        with: {dockerfile: Dockerfile, failure-threshold: warning}
-
-      - name: Set the build version (major.minor.datetime)
-        run: |
-          VERSION="$(./scripts/version.sh)"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "IMAGE=atm-dispenser:$VERSION" >> "$GITHUB_ENV"
-          echo "### Build version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build image
-        run: docker build --build-arg VERSION="$VERSION" -t "$IMAGE" .
-
-      - name: Validate image (version, user, health check, port, contents, size, CLI)
-        run: ./scripts/validate-image.sh "$IMAGE" "$VERSION"
-
-      - name: Image vulnerability scan (Trivy) - fail on fixable HIGH/CRITICAL
-        run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" \
-            image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE"
-
-      - name: Dockerfile misconfiguration scan (Trivy config)
-        run: |
-          docker run --rm -v "$PWD:/src:ro" "$TRIVY_IMAGE" \
-            config --exit-code 1 --severity HIGH,CRITICAL /src
-
-      - name: SBOM (CycloneDX)
-        run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/out" "$TRIVY_IMAGE" \
-            image --format cyclonedx --output /out/sbom.cdx.json "$IMAGE"
-      - uses: actions/upload-artifact@v6
-        with: {name: "sbom-${{ env.VERSION }}", path: sbom.cdx.json}
-
-      - name: Start the hardened container
-        run: |
-          docker run -d --name atm -p 8080:8080 --read-only --cap-drop ALL \
-            --security-opt no-new-privileges:true --memory 128m --pids-limit 100 "$IMAGE"
-
-      - name: Wait for the container health check
-        run: |
-          for _ in $(seq 1 30); do
-            [ "$(docker inspect -f '{{.State.Health.Status}}' atm)" = healthy ] && exit 0
-            sleep 1
-          done
-          docker logs atm; exit 1
-
-      - name: Container hardening checks (non-root, read-only filesystem)
-        run: |
-          test "$(docker exec atm python3 -c 'import os; print(os.getuid())')" = 10001
-          ! docker exec atm python3 -c "open('/app/probe', 'w')"
-
-      - name: End-to-end smoke test against the container (checks it reports the built version)
-        run: EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8080
-
-      - name: End-to-end smoke test with an API key
-        run: |
-          export ATM_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-          docker run -d --name atm-auth -p 8081:8080 -e ATM_API_KEY --read-only --cap-drop ALL "$IMAGE"
-          EXPECTED_VERSION="$VERSION" python3 atm-dispenser/tests/e2e/smoke_test.py http://localhost:8081
-
-      - name: DAST - OWASP ZAP API scan (driven by /openapi.json; any warning fails the build)
-        run: |
-          mkdir -p zap && chmod 777 zap
-          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
-            zap-api-scan.py -t http://localhost:8080/openapi.json -f openapi -r zap-report.html
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with: {name: "zap-report-${{ env.VERSION }}", path: zap/zap-report.html}
-
-      - name: Container logs
-        if: always()
-        run: docker logs atm || true

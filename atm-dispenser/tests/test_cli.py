@@ -1,5 +1,6 @@
 """The command-line program: inventory parsing, output format and exit codes."""
 
+import contextlib
 import io
 import os
 import subprocess
@@ -14,10 +15,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(argv, stdin_text=""):
-    """Run the CLI in-process. Returns (exit code, stdout, stderr)."""
+    """Run the CLI in-process. Returns (exit code, stdout, stderr), with runs of spaces squeezed
+    to one so the tests check the content, not the column padding."""
     out, err = io.StringIO(), io.StringIO()
     code = CommandLine(stdin=io.StringIO(stdin_text), stdout=out, stderr=err).run(argv)
-    return code, out.getvalue(), err.getvalue()
+    return code, squeeze(out.getvalue()), squeeze(err.getvalue())
+
+
+def squeeze(text):
+    return "\n".join(" ".join(line.split()) for line in text.splitlines())
 
 
 class FormatTests(unittest.TestCase):
@@ -26,6 +32,19 @@ class FormatTests(unittest.TestCase):
 
     def test_no_notes(self):
         self.assertEqual(CommandLine.format_notes({}), "no notes")
+
+    def test_money_uses_indian_digit_grouping(self):
+        for amount, shown in ((100, "₹100"), (2700, "₹2,700"), (200_000, "₹2,00,000"), (12_345_678, "₹1,23,45,678")):
+            with self.subTest(amount=amount):
+                self.assertEqual(CommandLine.money(amount), shown)
+
+    def test_a_withdrawal_is_shown_as_one_block(self):
+        code, out, _ = run(["2700"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("Withdrawal ₹2,700\n"
+                      "-----------------\n"
+                      "✓ Dispensed: ₹500 × 5, ₹200 × 1 (Total notes dispensed: 6)\n"
+                      "Updated inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total ₹5,300)", out)
 
 
 class CommandLineTests(unittest.TestCase):
@@ -76,7 +95,7 @@ class CommandLineTests(unittest.TestCase):
     def test_withdrawal_limit_can_be_changed(self):
         code, out, _ = run(["--inventory", "2000:200", "--max-withdrawal", "400000", "202000"])
         self.assertEqual(code, EXIT_OK)
-        self.assertIn("₹2000 × 101", out)
+        self.assertIn("₹2,000 × 101", out)
         code, _, err = run(["--max-withdrawal", "1000", "2700"])
         self.assertEqual(code, EXIT_INVALID_INPUT)
         self.assertIn("exceeds the limit of 1000", err)
@@ -108,13 +127,13 @@ class CommandLineTests(unittest.TestCase):
     def test_interactive_inventory_command_shows_current_notes(self):
         code, out, _ = run([], stdin_text="2700\ni\nq\n")
         self.assertEqual(code, EXIT_OK)
-        self.assertIn("ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total cash ₹5300)", out)
+        self.assertIn("ATM inventory: ₹500 × 3, ₹200 × 9, ₹100 × 20 (total ₹5,300)", out)
         self.assertEqual(out.count("Withdrawal"), 1)  # 'i' does not withdraw anything
 
     def test_interactive_inventory_command_is_case_insensitive_and_has_a_long_form(self):
         code, out, err = run([], stdin_text="I\ninventory\nINVENTORY\n")
         self.assertEqual(code, EXIT_OK)
-        self.assertEqual(out.count("(total cash ₹8000)"), 3)
+        self.assertEqual(out.count("ATM inventory: ₹500 × 8, ₹200 × 10, ₹100 × 20 (total ₹8,000)"), 4)  # start + 3
         self.assertNotIn("Withdrawal", out)
         self.assertEqual(err, "")
 
@@ -136,11 +155,57 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("Total notes dispensed: 6", out)
 
 
+class FriendlinessTests(unittest.TestCase):
+    """The program helps a person who types what people normally type."""
+
+    def test_amounts_written_like_money_get_a_hint(self):
+        for amount in ("2,700", "₹2700", "2700/-"):
+            with self.subTest(amount=amount):
+                code, _, err = run([amount])
+                self.assertEqual(code, EXIT_INVALID_INPUT)
+                self.assertIn("Type the amount as digits only, for example 2700", err)
+        self.assertNotIn("digits only", run(["abc"])[2])  # no hint when it is not a number at all
+
+    def test_interactive_help_command_lists_the_commands(self):
+        for command in ("h", "help", "?"):
+            with self.subTest(command=command):
+                code, out, err = run([], stdin_text=f"{command}\nq\n")
+                self.assertEqual(code, EXIT_OK)
+                self.assertEqual(out.count("i to show the inventory, h for help, q to quit"), 2)  # start + help
+                self.assertEqual(err, "")
+
+    def test_interactive_mode_says_goodbye(self):
+        self.assertTrue(run([], stdin_text="q\n")[1].endswith("Goodbye."))
+
+    def test_a_prompt_is_shown_only_in_a_real_terminal(self):
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+
+        out = io.StringIO()
+        CommandLine(stdin=Terminal("2700\nq\n"), stdout=out, stderr=io.StringIO()).run([])
+        self.assertEqual(out.getvalue().count("> "), 2)  # before "2700" and before "q"
+        self.assertNotIn("> ", run([], stdin_text="2700\nq\n")[1])  # piped input: no prompt
+
+    def test_help_shows_examples_and_exit_codes(self):
+        out = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(out):
+            CommandLine().run(["--help"])
+        self.assertIn("examples:", out.getvalue())
+        self.assertIn("exit codes: 0 = dispensed, 1 = cannot dispense, 2 = invalid input", out.getvalue())
+
+
 class StateFileTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.path = str(Path(folder.name) / "atm.json")
+
+    def test_it_says_which_inventory_is_used(self):
+        self.assertIn(f"Created the state file {self.path}", run(["--state-file", self.path, "100"])[1])
+        self.assertIn(f"Using the saved inventory from {self.path}", run(["--state-file", self.path, "100"])[1])
+        out = run(["--state-file", self.path, "--inventory", "2000:5", "100"])[1]
+        self.assertIn("--inventory is ignored: the saved notes are used", out)
 
     def test_the_inventory_carries_over_to_the_next_run(self):
         self.assertEqual(run(["--state-file", self.path, "2700"])[0], EXIT_OK)

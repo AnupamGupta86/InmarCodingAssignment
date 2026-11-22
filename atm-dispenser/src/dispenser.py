@@ -7,7 +7,7 @@
     CashDispenser   the ATM: owns the notes, updates them only after a complete allocation,
                     and never lets two withdrawals take the same notes.
 
-The command line (cli.py) and the HTTP service (service.py) are thin front ends over CashDispenser.
+The command line (cli.py) is a thin front end over CashDispenser.
 """
 
 import contextlib
@@ -24,7 +24,7 @@ from typing import Any
 
 try:
     import fcntl  # file locks shared between processes (macOS and Linux)
-except ImportError:  # pragma: no cover - Windows runs the Docker image instead
+except ImportError:  # pragma: no cover - Windows (use WSL)
     fcntl = None  # type: ignore[assignment]
 
 CANNOT_DISPENSE = "Cannot dispense requested amount"
@@ -329,7 +329,7 @@ class InventoryStore:
 
     The file looks like {"inventory": {"500": 8, "200": 10, "100": 20}}.
 
-    Several programs or containers may use the same file at the same time. Each withdrawal
+    Several programs may use the same file at the same time. Each withdrawal
     holds an exclusive lock on "<file>.lock" while it reads the notes, allocates and saves the
     result, so two processes can never pay out the same notes. The file is replaced atomically
     (write a temporary file, then rename it), so a crash never leaves it half-written.
@@ -337,7 +337,7 @@ class InventoryStore:
 
     def __init__(self, path: str | os.PathLike[str]):
         if fcntl is None:  # pragma: no cover - Windows
-            raise InvalidInventoryError("A state file needs macOS or Linux; on Windows use the Docker image")
+            raise InvalidInventoryError("A state file needs macOS or Linux; on Windows use WSL")
         # Follow a symbolic link once, so saving updates the real file instead of replacing the link.
         self.path = Path(os.path.realpath(path))
         self._lock_path = self.path.with_name(self.path.name + ".lock")
