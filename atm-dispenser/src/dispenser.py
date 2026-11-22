@@ -242,7 +242,7 @@ class NoteAllocator:
     @staticmethod
     def split_into_bundles(count: int) -> list[int]:
         """8 -> [1, 2, 4, 1]: choosing some of these bundles gives any count from 0 to 8."""
-        bundles = []
+        bundles: list[int] = []
         size = 1
         while count > 0:
             take = min(size, count)

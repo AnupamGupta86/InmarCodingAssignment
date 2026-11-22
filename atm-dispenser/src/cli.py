@@ -130,7 +130,7 @@ class CommandLine:
         if len(digits) <= 3:
             return CURRENCY + digits
         rest, last_three = digits[:-3], digits[-3:]
-        groups = []
+        groups: list[str] = []
         while rest:
             groups.insert(0, rest[-2:])
             rest = rest[:-2]
