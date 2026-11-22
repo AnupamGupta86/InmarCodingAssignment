@@ -77,6 +77,9 @@ class CommandLine:
         try:
             amount = Validator.amount(amount_text)
             notes, inventory_after = atm.dispense_with_inventory(amount)
+        except InvalidInventoryError as error:  # the state file was broken or removed meanwhile
+            self._print_problem(amount_text, f"{error}; nothing was dispensed")
+            return EXIT_INVALID_INPUT
         except ATMError as error:
             self._print_problem(amount_text, f"Invalid amount: {error}{self._amount_hint(amount_text)}")
             return EXIT_INVALID_INPUT
@@ -117,7 +120,12 @@ class CommandLine:
 
     def show_inventory(self, atm: CashDispenser) -> None:
         """Print the notes in the ATM and their total value, between two dashed rules."""
-        line = f"{'ATM inventory:':<{LABEL_WIDTH + 2}}{self.format_inventory(atm.inventory)}"
+        try:
+            inventory = atm.inventory
+        except InvalidInventoryError as error:  # the state file was broken or removed meanwhile
+            self._print(f"✗ {error}", error=True)
+            return
+        line = f"{'ATM inventory:':<{LABEL_WIDTH + 2}}{self.format_inventory(inventory)}"
         rule = "-" * len(line)
         self._print(f"{rule}\n{line}\n{rule}")
 

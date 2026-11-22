@@ -227,6 +227,28 @@ class StateFileTests(unittest.TestCase):
         self.assertNotIn("Traceback", err)
         self.assertNotIn("Withdrawal", out)
 
+    def test_a_state_file_broken_during_a_session_is_reported_not_crashed(self):
+        class BreaksTheFileAfterTheFirstLine:
+            def __init__(self, path, lines):
+                self.path, self.lines = path, lines
+
+            def __iter__(self):
+                for number, line in enumerate(self.lines):
+                    if number == 1:
+                        Path(self.path).write_text("{broken", encoding="utf-8")
+                    yield line + "\n"
+
+        for second_line in ("i", "100"):
+            with self.subTest(second_line=second_line):
+                Path(self.path).unlink(missing_ok=True)
+                out, err = io.StringIO(), io.StringIO()
+                session = BreaksTheFileAfterTheFirstLine(self.path, ["100", second_line, "q"])
+                code = CommandLine(stdin=session, stdout=out, stderr=err).run(["--state-file", self.path])
+                self.assertIn("Cannot read the state file", err.getvalue())
+                self.assertNotIn("Invalid amount", err.getvalue())
+                self.assertIn("Goodbye.", out.getvalue())  # the session carried on to "q"
+                self.assertEqual(code, EXIT_INVALID_INPUT if second_line == "100" else EXIT_OK)
+
     def test_a_corrupt_state_file_is_invalid_input(self):
         Path(self.path).write_text("{bad", encoding="utf-8")
         code, _, err = run(["--state-file", self.path, "100"])
