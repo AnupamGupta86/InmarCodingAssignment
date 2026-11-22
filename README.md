@@ -251,39 +251,68 @@ Alternatives considered:
 
 #### 2.3.2 Dynamic Programming ("Bounded Coin Change")
 
-`NoteAllocator` builds a table that answers, for every amount from 0 to the target, *"what is the
-fewest notes that make exactly this amount?"*. Every combination of the available notes is
-considered, so the answer is always the true minimum, and "no answer" really means the amount
-cannot be paid.
+**The idea in one line:** build a small table of *"the fewest notes needed for every amount from 0
+up to the one requested"*, adding one kind of note at a time. Because every combination is
+covered, the last row is always the true minimum, and an empty last row really means the amount
+cannot be paid. "Bounded" means each note can be used only as many times as the ATM holds it.
 
-1. **Shrink the problem with the GCD (Greatest Common Divisor).** Every payable amount is a
-   multiple of the greatest common divisor of the denominations (100 for 500/200/100). So ₹2700 becomes 27 units, and
-   ₹250 is rejected immediately.
-2. **Only count useful notes.** No denomination can use more than `amount ÷ value` notes, so a
-   machine reporting a trillion notes is no slower than one with just enough.
-3. **Bundle the notes.** 8 notes of ₹500 become bundles of 1, 2, 4 and 1 notes. Any count from
-   0 to 8 is a sum of some of these bundles, so the algorithm only decides "use this bundle or not".
-4. **Add the bundles one at a time.** For each bundle and each amount, check whether
-   "this bundle + the best way to make the rest" needs fewer notes than the best found so far.
-5. **Read the answer back** by walking the bundles in reverse.
+**Worked example:** pay ₹60 from `{50: 1, 20: 3}`, the case where greedy fails.
 
-**Ties:** if two combinations use the same number of notes, the one with higher-value notes is
-chosen (6 from `{4:1, 3:2, 2:1}` gives `4 + 2`), so results are always the same.
+| After adding | ₹0 | ₹10 | ₹20 | ₹30 | ₹40 | ₹50 | ₹60 |
+|---|---|---|---|---|---|---|---|
+| nothing yet | 0 | – | – | – | – | – | – |
+| ₹50 × 1 | 0 | – | – | – | – | 1 | – |
+| a bundle of one ₹20 | 0 | – | 1 | – | – | 1 | – |
+| a bundle of two ₹20 | 0 | – | 1 | – | 2 | 1 | **3** |
+
+Each cell is the fewest notes for that amount (– = not possible yet). ₹60 needs 3 notes, and
+walking back through the rows that changed it gives `₹20 × 3`.
+
+**Four tricks keep the table small:**
+
+1. **Work in units of the GCD (Greatest Common Divisor).** Every payable amount is a multiple of
+   the GCD of the notes (100 for ₹500/₹200/₹100), so ₹2,700 becomes 27 rows instead of 2,701, and
+   ₹250 is refused at once.
+2. **Ignore notes that can never be used.** At most `amount ÷ value` notes of one kind can be
+   used, so an ATM reporting a trillion notes is no slower than one with just enough.
+3. **Bundle the notes.** 8 × ₹500 is added as bundles of 1, 2, 4 and 1 notes: 4 rows instead of 8,
+   and the bundles can still make any count from 0 to 8.
+4. **Read the answer back** from the last row, following which bundle improved each amount.
+
+**Ties:** if two combinations use the same number of notes, the one with higher-value notes wins
+(₹6 from `{4: 1, 3: 2, 2: 1}` gives `4 + 2`, not `3 + 3`), so the result is always the same.
 
 #### 2.3.3 Time And Space Complexity
 
-Let **S** = amount ÷ GCD (greatest common divisor) of the denominations, and **B** = number of bundles
-(the sum over denominations of ⌈log₂(usable notes + 1)⌉).
+**In one line:** the work is the size of the table from 2.3.2, which is
+*(number of rows) × (number of bundles)*.
 
-| | Complexity | Notes |
+- **S, the rows** = amount ÷ GCD. ₹2,700 with ₹500/₹200/₹100 notes → 2,700 ÷ 100 = **27** (plus row 0).
+- **B, the bundles** = a few per denomination, because bundles double in size (1, 2, 4, 8, …).
+  The brief's ATM, using only the notes ₹2,700 could need: ₹500 × 5 → 3 bundles, ₹200 × 10 → 4,
+  ₹100 × 20 → 5, so **B = 12**.
+
+| | Complexity | In plain words | The brief's example |
+|---|---|---|---|
+| Time | **O(S × B)** | every bundle visits every row once | 28 × 12 = **336 small steps** |
+| Space | **O(S × B)** | one byte per cell, to read the answer back | about **336 bytes** |
+| Inventory update | O(D) | one subtraction per denomination (D) | 3 subtractions |
+
+**Why it stays fast:** doubling the notes in the ATM adds only one bundle, not twice the work, and
+notes beyond `amount ÷ value` are ignored, so a trillion notes costs the same as just enough. Paying
+₹1,99,990 from 7 denominations with 2,000 notes each takes about 0.1 s.
+
+**Compared with the alternatives:**
+
+| Approach | Work | Problem |
 |---|---|---|
-| Time | **O(S × B)** | ₹2700 from the brief: S = 27, B = 12 → about 336 steps |
-| Space | **O(S × B)** | one byte per (bundle, amount) to rebuild the answer, plus O(S) for the table |
-| Inventory update | O(D) | D = number of denominations |
+| Greedy | D steps | Fast, but sometimes wrong (2.3.1) |
+| Textbook table, one row per note | S × total notes | Correct, but 2,000 notes means 2,000 passes |
+| **This solution (bundled table)** | **S × B** | Correct; 2,000 notes is only 11 bundles |
 
-Measured: ₹199,990 from 7 denominations with up to 2,000 notes each takes about 0.1 s. Greedy is
-O(D) but can be wrong; the textbook bounded version is O(S × total notes); bundling replaces
-"total notes" with its logarithm.
+**Safety limit:** a request needing more than 64 million table cells (for example ₹1,99,999 from
+50 denominations starting at ₹1) is refused with a clear message, so one request cannot use
+unlimited memory or time.
 
 ### 2.4 Workflow: A Withdrawal
 
@@ -300,9 +329,9 @@ flowchart TD
     update --> paid["Unlock · print the notes<br/>exit code 0"]
 ```
 
-Invalid input never touches the inventory, a refused withdrawal changes nothing (requirements R5
-and R6 in [section 4](#4-requirements-coverage)), and the inventory is updated only after the
-whole amount is allocated (R4). If saving the state file fails, nothing changes.
+Invalid input never touches the inventory, a refused withdrawal changes nothing (requirement R3 in
+[section 4](#4-requirements-coverage)), and the inventory is updated only after the whole
+amount is allocated. If saving the state file fails, nothing changes.
 
 ### 2.5 Workflow: Continuous Integration
 
@@ -348,23 +377,14 @@ InmarCodingAssignment/
 
 ## 4. Requirements Coverage
 
-| # | Requirement from the brief | Where |
-|---|---|---|
-| R1 | Amount must be a positive whole number | `Validator.amount` |
-| R2 | Only available notes / never more than available | `NoteAllocator` uses each note at most once; `test_dispenser.NotesLimitTests` |
-| R3 | Minimum number of notes | Dynamic programming; brute-force cross-check in `AgainstBruteForceTests` |
-| R4 | Update inventory only after full allocation | `CashDispenser` builds the new inventory, then swaps it in |
-| R5 | "Cannot dispense requested amount" | `CANNOT_DISPENSE`, printed by the CLI; `dispense()` returns `None` |
-| R6 | Failed withdrawal leaves inventory unchanged | `test_dispenser.FailedWithdrawalTests` |
-| R7 | Do not assume greedy | `{4:1, 3:2}` → `3 × 2`, tested |
-| R8 | Any denominations | Nothing hard-coded; `test_other_denominations_are_supported` |
-| R9 | Standard library only | No third-party packages (`dependencies = []`): `argparse`, `threading`, `fcntl`, `json`, `math`, `tempfile`, `unittest` and other built-in modules |
-| R10 | Validation messages | [Section 6.1](#61-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
-| R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/test-concurrent-withdrawals.sh` |
-| R12 | Positive and negative test cases | 173 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
-| R13 | README: design, how to run and test, complexity | Sections [2](#2-solution-architecture--workflow) (design and [complexity](#233-time-and-space-complexity)), [5](#5-installation-configuration--usage) (how to run) and [6.2](#62-testing-strategy) (tests) |
-| R14 | Readable, maintainable code | Two small object-oriented modules with type hints; ruff and mypy checked in CI |
-
+| # | Requirements from the brief | How they are met | Proved by |
+|---|---|---|---|
+| R1 | **Validation:** amount must be a positive whole number; clear messages for zero, negative and non-numeric amounts, negative note counts, invalid denominations and an empty inventory | `Validator` ([rules and messages, 6.1](#61-validation-rules-and-messages)) | `InvalidAmountTests`, `InvalidInventoryTests` |
+| R2 | **Correct notes:** only available notes, never more than available, minimum number of notes, no greedy assumption, any denominations | `NoteAllocator` dynamic programming ([2.3](#23-algorithm-approach-and-complexity)); nothing hard-coded | `NotesLimitTests`, `AgainstBruteForceTests`, greedy trap `{4:1, 3:2}` → `3 × 2` |
+| R3 | **Safe inventory:** updated only after the whole amount is allocated; otherwise "Cannot dispense requested amount", `dispense()` returns `None` and nothing changes | `CashDispenser` builds the new inventory as a copy, then swaps it in | `SuccessfulWithdrawalTests`, `FailedWithdrawalTests` |
+| R4 | **Concurrency:** two withdrawals at the same time never pay the same notes | A lock (threads) and the state-file lock (processes) | `ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/test-concurrent-withdrawals.sh` |
+| R5 | **Code:** standard library only; readable and maintainable | No third-party packages (`dependencies = []`); two small modules with type hints; ruff and mypy in CI | CI quality job |
+| R6 | **Submission:** positive and negative tests; README with design, how to run and test, complexity | 173 tests; sections [2](#2-solution-architecture--workflow), [5](#5-installation-configuration--usage) and [6](#6-validation--testing-strategy) | `make test` |
 ---
 
 ## 5. Installation, Configuration & Usage
@@ -459,45 +479,37 @@ CodeQL and the secret scan run in CI ([Security & DevSecOps](#7-security--devsec
 
 ### 6.1 Validation Rules And Messages
 
-| Input | Result |
-|---|---|
-| `0` | `Amount must be greater than zero` |
-| `-500` | `Amount cannot be negative, got -500` |
-| `"abc"`, `""`, `None`, `True`, `"2_700"`, `"१००"`, `"１００"` (non-ASCII digits) | `Amount must be a number, got …` |
-| `12.5`, `"12.5"`, `2700.0` | `Amount must be a whole number, got …` |
-| More than 18 digits | `Amount is too large: at most 18 digits` |
-| Above the per-withdrawal limit (default 200000) | `Amount … exceeds the limit of 200000 per withdrawal` |
-| `{}` | `ATM inventory is empty: add at least one denomination` |
-| `{500: -1}` | `… note count … cannot be negative` |
-| `{500: 2.5}`, `{500: "8"}` | `… note count … must be a whole number` |
-| `{0: 5}`, `{-100: 5}`, `{0.5: 5}`, `{"500": 5}` | `Invalid denomination … must be a positive whole number` |
-| More than 50 denominations | `Too many denominations: N (at most 50)` |
-| An amount that would need more than 64 million calculation steps (only possible after raising the withdrawal limit, e.g. ₹10¹² in ₹1 notes) | `Amount … is too large to work out with this inventory; lower the amount or the withdrawal limit` |
-| State file that is not valid JSON, has the wrong shape, bad values or the same denomination twice (`"500"` and `"0500"`) | `Cannot read the state file …` / `Invalid denomination … (in the state file …)`; exit code 2 |
-| State file in a folder that does not exist or is not writable | `Cannot use the state file …`; exit code 2 |
-| State file that is a device, a named pipe or larger than 1 MB (e.g. `--state-file /dev/zero`) | `Cannot read the state file …: it is not a regular file` / `it is too large`; refused before reading, exit code 2 |
-| State file corrupted or deleted while the program is running | `Cannot read the state file …; nothing was dispensed`; exit code 2; the session carries on |
-| State file can no longer be saved while running (e.g. the folder became read-only) | `Cannot save the state file …; nothing was dispensed`; exit code 2; the inventory is unchanged |
-| Amount that cannot be made exactly (e.g. 250) | `Cannot dispense requested amount`; exit code 1 |
+Amount errors raise `InvalidAmountError` and inventory errors `InvalidInventoryError`, both
+subclasses of `ATMError`. ✓ = accepted, ✗ = refused.
 
-Amount errors are `InvalidAmountError` and inventory errors `InvalidInventoryError`, both
-subclasses of `ATMError`. Decisions worth calling out:
-
-- Amounts may be whole numbers or whole-number text (`"2700"`, `" 2700 "`), as a keypad or command
-  line produces. Floats are rejected even when whole (`2700.0`): money never passes through floating point.
-- `True`/`False` are rejected although Python treats them as 1/0.
-- Only the ASCII digits 0–9 count: Python itself would also accept Arabic-Indic, Devanagari or
-  full-width digits, which no ATM keypad sends.
-- Error messages never repeat long input in full: values are cut to 30 characters. Amounts written
-  like money (`2,700`, `₹2700`, `2700/-`) are refused, with a hint to type digits only.
-- A state file saved with a byte-order mark (Windows Notepad) is accepted, and a state file that is
-  a symbolic link stays a link: saves update the file it points to.
-- On a terminal that cannot show `₹`, `×`, `✓` or `✗` (an ASCII or Latin-1 console), the output
-  falls back to `Rs.`, `x`, `OK` and `X` instead of failing.
-- Ctrl+C stops the program quietly (`Cancelled.`, exit code 130), and piping the output into a
-  program that stops reading early (`| head -1`) is not reported as an error.
-- A denomination with **0 notes is allowed** (an empty cassette); if every count is 0, every
-  withdrawal gives "Cannot dispense".
+| | Input | Result | Why |
+|---|---|---|---|
+| **Amount** | `2700`, `"2700"`, `" 2700 "` | ✓ dispensed | A keypad or command line sends text |
+| | `0` | ✗ `Amount must be greater than zero` | |
+| | `-500` | ✗ `Amount cannot be negative, got -500` | |
+| | `"abc"`, `""`, `None`, `True` | ✗ `Amount must be a number, got …` | `True`/`False` are refused although Python treats them as 1/0 |
+| | `"१००"`, `"１００"`, `"2_700"` | ✗ `Amount must be a number, got …` | Only ASCII digits 0–9: no ATM keypad sends Devanagari or full-width digits |
+| | `2,700`, `₹2700`, `2700/-` | ✗ `Amount must be a number` + a hint to type digits only | Written like money |
+| | `12.5`, `"12.5"`, `2700.0` | ✗ `Amount must be a whole number, got …` | Money never passes through floating point, even when whole |
+| | More than 18 digits | ✗ `Amount is too large: at most 18 digits` | Long input is cut to 30 characters in every message |
+| | Above the limit (default 200000) | ✗ `Amount … exceeds the limit of 200000 per withdrawal` | |
+| | Needs more than 64 million calculation steps (only after raising the limit, e.g. ₹10¹² in ₹1 notes) | ✗ `Amount … is too large to work out with this inventory; …` | Bounds time and memory |
+| | Cannot be made exactly (e.g. 250) | ✗ `Cannot dispense requested amount`, exit code 1 | |
+| **Inventory** | `{500: 0, 100: 5}` | ✓ accepted | An empty cassette; if every count is 0, every withdrawal is "Cannot dispense" |
+| | `{}` | ✗ `ATM inventory is empty: add at least one denomination` | |
+| | `{500: -1}` | ✗ `… note count … cannot be negative` | |
+| | `{500: 2.5}`, `{500: "8"}` | ✗ `… note count … must be a whole number` | |
+| | `{0: 5}`, `{-100: 5}`, `{0.5: 5}`, `{"500": 5}` | ✗ `Invalid denomination … must be a positive whole number` | |
+| | More than 50 denominations | ✗ `Too many denominations: N (at most 50)` | |
+| **State file** | Saved with a byte-order mark (Windows Notepad), or a symbolic link | ✓ accepted | Saves update the file the link points to |
+| | Not valid JSON, wrong shape, bad values, same denomination twice (`"500"` and `"0500"`) | ✗ `Cannot read the state file …` / `Invalid denomination … (in the state file …)`, exit code 2 | |
+| | Folder missing or not writable | ✗ `Cannot use the state file …`, exit code 2 | |
+| | A device, a named pipe or over 1 MB (e.g. `/dev/zero`) | ✗ `… it is not a regular file` / `it is too large`, exit code 2 | Refused before reading |
+| | Corrupted or deleted while running | ✗ `Cannot read the state file …; nothing was dispensed`, exit code 2 | The session carries on |
+| | Cannot be saved while running (e.g. folder became read-only) | ✗ `Cannot save the state file …; nothing was dispensed`, exit code 2 | Inventory unchanged |
+| **Terminal** | Cannot show `₹`, `×`, `✓`, `✗` (ASCII or Latin-1) | ✓ falls back to `Rs.`, `x`, `OK`, `X` | |
+| | Ctrl+C | `Cancelled.`, exit code 130 | Stops quietly |
+| | Output piped into `head -1` | ✓ no error | |
 
 ### 6.2 Testing Strategy
 
