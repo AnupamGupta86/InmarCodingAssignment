@@ -367,7 +367,7 @@ InmarCodingAssignment/
 | R3 | **Safe inventory:** updated only after the whole amount is allocated; otherwise "Cannot dispense requested amount", `dispense()` returns `None` and nothing changes | `CashDispenser` builds the new inventory as a copy, then swaps it in | `SuccessfulWithdrawalTests`, `FailedWithdrawalTests` |
 | R4 | **Concurrency:** two withdrawals at the same time never pay the same notes | A lock (threads) and the state-file lock (processes) | `ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/test-concurrent-withdrawals.sh` |
 | R5 | **Code:** standard library only; readable and maintainable | No third-party packages (`dependencies = []`); two small modules with type hints; ruff and mypy in CI | CI quality job |
-| R6 | **Submission:** positive and negative tests; README with design, how to run and test, complexity | 173 tests; sections [2](#2-solution-architecture--workflow), [5](#5-installation-configuration--usage) and [6](#6-validation--testing) | `make test` |
+| R6 | **Submission:** positive and negative tests; README with design, approach, how to run and test, complexity | 173 tests; sections [2](#2-solution-architecture--workflow), [5](#5-installation-configuration--usage) and [6](#6-validation--testing) | `make test` |
 ---
 
 ## 5. Installation, Configuration & Usage
