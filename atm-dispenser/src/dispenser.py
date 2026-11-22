@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 from collections.abc import Iterator, Mapping
@@ -319,6 +320,9 @@ class InventoryStore:
     (write a temporary file, then rename it), so a crash never leaves it half-written.
     """
 
+    # A state file holds a handful of denominations; anything bigger is not one of ours.
+    MAX_FILE_BYTES = 1_000_000
+
     def __init__(self, path: str | os.PathLike[str]):
         if fcntl is None:  # pragma: no cover - Windows
             raise InvalidInventoryError("A state file needs macOS or Linux; on Windows use WSL")
@@ -346,6 +350,7 @@ class InventoryStore:
 
     def load(self) -> Notes:
         """Read and validate the saved inventory. Raises InvalidInventoryError if the file is bad."""
+        self._check_is_a_small_regular_file()
         try:
             text = self.path.read_text(encoding="utf-8-sig")  # -sig: also accepts a Windows Notepad file
             data = json.loads(text, object_pairs_hook=self._without_duplicate_keys)
@@ -368,6 +373,21 @@ class InventoryStore:
                 )
             notes[denomination] = count
         return Validator.inventory(notes)
+
+    def _check_is_a_small_regular_file(self) -> None:
+        """Refuse devices, pipes and huge files before opening them: /dev/zero would be read until
+        memory runs out, and opening a named pipe waits forever for a writer."""
+        try:
+            info = self.path.stat()
+        except OSError as error:
+            raise InvalidInventoryError(f"Cannot read the state file {self.path}: {error}") from None
+        if not stat.S_ISREG(info.st_mode):
+            raise InvalidInventoryError(f"Cannot read the state file {self.path}: it is not a regular file")
+        if info.st_size > self.MAX_FILE_BYTES:
+            raise InvalidInventoryError(
+                f"Cannot read the state file {self.path}: it is too large "
+                f"({info.st_size:,} bytes; at most {self.MAX_FILE_BYTES:,})"
+            )
 
     @staticmethod
     def _without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

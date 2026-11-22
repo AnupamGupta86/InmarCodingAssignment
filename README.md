@@ -52,7 +52,7 @@ Key features:
 - **Optional persistence:** the inventory can be kept in a JSON file that survives restarts and
   can be shared safely by several processes.
 - **Small and object-oriented:** two source files, standard library only, Python 3.14.8.
-- **Tested like production code:** 166 automated tests and a DevSecOps pipeline for GitHub
+- **Tested like production code:** 173 automated tests and a DevSecOps pipeline for GitHub
   Actions and Azure DevOps.
 
 ### 1.2 Assumptions
@@ -314,7 +314,7 @@ flowchart LR
     dev["Developer"] -->|git push| repo["GitHub repository"]
     repo --> quality["Quality<br/>ruff · mypy · pip-audit"]
     repo --> sast["Security<br/>CodeQL · gitleaks"]
-    repo --> tests["Tests on Linux and macOS<br/>166 tests · CLI example ·<br/>concurrent-withdrawals test"]
+    repo --> tests["Tests on Linux and macOS<br/>173 tests · CLI example ·<br/>concurrent-withdrawals test"]
     repo --> coverage["Coverage<br/>at least 70%"]
     quality --> ok(["All pass: change accepted"])
     sast --> ok
@@ -332,7 +332,7 @@ InmarCodingAssignment/
 │   ├── src/
 │   │   ├── dispenser.py             ATM core: Validator, NoteAllocator, InventoryStore, CashDispenser, errors
 │   │   └── cli.py                   command line: CommandLine
-│   ├── tests/                       166 unittest tests, one file per source file
+│   ├── tests/                       173 unittest tests, one file per source file
 │   │   ├── test_dispenser.py        validation, algorithm, ATM, state file, concurrency, property tests
 │   │   └── test_cli.py              CommandLine
 │   ├── pyproject.toml               version, Python version and tool configuration
@@ -361,7 +361,7 @@ InmarCodingAssignment/
 | R9 | Standard library only | No third-party packages (`dependencies = []`): `argparse`, `threading`, `fcntl`, `json`, `math`, `tempfile`, `unittest` and other built-in modules |
 | R10 | Validation messages | [Section 6.1](#61-validation-rules-and-messages); `test_dispenser.InvalidAmountTests`, `InvalidInventoryTests` |
 | R11 | Concurrent withdrawals must not share notes | Lock in `CashDispenser` (threads) and the state-file lock (processes); `test_dispenser.ConcurrentWithdrawalTests`, `StateFileTests`, `scripts/test-concurrent-withdrawals.sh` |
-| R12 | Positive and negative test cases | 166 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
+| R12 | Positive and negative test cases | 173 tests ([section 6.2](#62-testing-strategy)); every validation error and every "cannot dispense" path |
 | R13 | README: design, how to run and test, complexity | Sections [2](#2-solution-architecture--workflow) (design and [complexity](#233-time-and-space-complexity)), [5](#5-installation-configuration--usage) (how to run) and [6.2](#62-testing-strategy) (tests) |
 | R14 | Readable, maintainable code | Two small object-oriented modules with type hints; ruff and mypy checked in CI |
 
@@ -379,7 +379,7 @@ run the program or the tests.
 
 ```bash
 git clone https://github.com/AnupamGupta86/InmarCodingAssignment.git && cd InmarCodingAssignment
-python3 -m unittest discover -s atm-dispenser        # 166 tests
+python3 -m unittest discover -s atm-dispenser        # 173 tests
 python3 atm-dispenser/src/cli.py 2700                # example from the brief
 ```
 
@@ -395,7 +395,7 @@ python3 atm-dispenser/src/cli.py 2700                # example from the brief
 After cloning (see the Quick start), from the repository root:
 
 ```bash
-python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 166 tests ... OK
+python3 -m unittest discover -s atm-dispenser -v        # expect: Ran 173 tests ... OK
 ```
 
 No `PYTHONPATH` to set: the program finds its own modules, and the tests add `src/` to the path
@@ -458,6 +458,7 @@ interactive mode. Run it with `--help` for examples; [5.3](#53-validate-the-use-
 | `0` | Every withdrawal was dispensed |
 | `1` | At least one amount could not be dispensed ("Cannot dispense requested amount") |
 | `2` | Invalid input (amount, inventory or limit), or a state file that cannot be read or saved |
+| `130` | Cancelled with Ctrl+C (the usual code for that) |
 
 ### 5.6 Makefile Shortcuts
 
@@ -491,6 +492,7 @@ interactive mode. Run it with `--help` for examples; [5.3](#53-validate-the-use-
 | An amount that would need more than 64 million calculation steps (only possible after raising the withdrawal limit, e.g. ₹10¹² in ₹1 notes) | `Amount … is too large to work out with this inventory; lower the amount or the withdrawal limit` |
 | State file that is not valid JSON, has the wrong shape, bad values or the same denomination twice (`"500"` and `"0500"`) | `Cannot read the state file …` / `Invalid denomination … (in the state file …)`; exit code 2 |
 | State file in a folder that does not exist or is not writable | `Cannot use the state file …`; exit code 2 |
+| State file that is a device, a named pipe or larger than 1 MB (e.g. `--state-file /dev/zero`) | `Cannot read the state file …: it is not a regular file` / `it is too large`; refused before reading, exit code 2 |
 | State file corrupted or deleted while the program is running | `Cannot read the state file …; nothing was dispensed`; exit code 2; the session carries on |
 | State file can no longer be saved while running (e.g. the folder became read-only) | `Cannot save the state file …; nothing was dispensed`; exit code 2; the inventory is unchanged |
 | Amount that cannot be made exactly (e.g. 250) | `Cannot dispense requested amount`; exit code 1 |
@@ -507,13 +509,17 @@ subclasses of `ATMError`. Decisions worth calling out:
   like money (`2,700`, `₹2700`, `2700/-`) are refused, with a hint to type digits only.
 - A state file saved with a byte-order mark (Windows Notepad) is accepted, and a state file that is
   a symbolic link stays a link: saves update the file it points to.
+- On a terminal that cannot show `₹`, `×`, `✓` or `✗` (an ASCII or Latin-1 console), the output
+  falls back to `Rs.`, `x`, `OK` and `X` instead of failing.
+- Ctrl+C stops the program quietly (`Cancelled.`, exit code 130), and piping the output into a
+  program that stops reading early (`| head -1`) is not reported as an error.
 - A denomination with **0 notes is allowed** (an empty cassette); if every count is 0, every
   withdrawal gives "Cannot dispense".
 
 ### 6.2 Testing Strategy
 
 ```bash
-python3 -m unittest discover -s atm-dispenser -v                       # all 166 tests, about 2 seconds
+python3 -m unittest discover -s atm-dispenser -v                       # all 173 tests, about 2 seconds
 python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one test file (test_dispenser / test_cli)
 ./scripts/test-concurrent-withdrawals.sh                               # several real processes, one ATM
 ```
@@ -529,7 +535,9 @@ python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one tes
 | **Adversarial regression** | `test_dispenser.HostileInputRegressionTests`, `StateFileTests`, `test_cli.StateFileTests` | One test per problem found by trying to break the code: huge calculations refused (no `MemoryError`), too many denominations, long input not echoed, failed save reported clearly, duplicate denominations, byte-order mark and symbolic link in the state file |
 | **CLI** | `test_cli.py` | Output format, exit codes, withdrawal limit, interactive mode, the `i` inventory command and Ctrl+C, `python3 atm-dispenser/src/cli.py` run as a real process |
 | **User friendliness** | `test_cli.FriendlinessTests`, `StateFileTests` | Hint for amounts typed like `2,700` or `₹2700`; `h`/`help`/`?`; a `>` prompt only in a real terminal; `Goodbye.`; examples in `--help`; a clear message when a saved state file is used and `--inventory` is ignored |
-| **Performance** | `test_dispenser.PerformanceTests` | ₹199,990 from a large ATM in well under a second; a trillion notes per denomination is no slower |
+| **Performance** | `test_dispenser.PerformanceTests` | ₹199,990 from a large ATM in well under a second; a trillion notes per denomination is no slower. Measured: the brief's example 0.01 s; every Indian note and coin with ₹1,99,999 to pay 0.8 s; the largest calculation allowed about 2–3 s and 70 MB |
+| **Stress** | manual runs (recorded here) | 10,000 withdrawals in one run 0.07 s; 2,000 withdrawals saved to disk 3 s; 50 and 200 processes at once on one state file: never a note paid twice, no errors |
+| **Robustness** | `test_cli.RobustnessTests`, `StateFileTests` | ASCII and Latin-1 terminals, Ctrl+C mid-calculation, output piped into `head`, an explicitly empty `--inventory`, devices, named pipes and oversized files as the state file |
 
 ---
 
@@ -542,7 +550,7 @@ python3 -m unittest discover -s atm-dispenser -p test_cli.py           # one tes
 | Input | Every amount and inventory value validated; numbers are ASCII digits only, at most 18 digits; floats and booleans rejected |
 | Resource limits | Per-withdrawal limit (default 200000); calculation capped at 64 million steps and inventories at 50 denominations, so no input can exhaust memory or CPU |
 | Errors | Clear messages instead of tracebacks; long input is never echoed in full |
-| State file | Optional; written atomically (temporary file + rename, fsync); an exclusive file lock while it is read and updated; validated like any input when read (duplicate keys and denominations rejected); a symbolic link stays a link |
+| State file | Optional; written atomically (temporary file + rename, fsync); an exclusive file lock while it is read and updated; only a regular file of at most 1 MB is read (no devices or pipes); validated like any input when read (duplicate keys and denominations rejected); a symbolic link stays a link |
 | Supply chain | Standard library only (no runtime dependencies); dev tools pinned in `requirements-dev.txt` and audited |
 
 ### 7.2 Automated Security Checks

@@ -6,6 +6,7 @@ inputs (fixed seeds, so failures are repeatable) at the code and check rules tha
 
 import contextlib
 import itertools
+import os
 import random
 import string
 import tempfile
@@ -763,6 +764,34 @@ class StateFileTests(unittest.TestCase):
         CashDispenser({500: 9}, store=InventoryStore(link)).dispense(500)
         self.assertTrue(link.is_symlink())
         self.assertEqual(InventoryStore(real).load(), {500: 1})
+
+    def test_a_state_file_deleted_while_running_is_reported_clearly(self):
+        atm = CashDispenser({500: 8}, store=InventoryStore(self.path))
+        self.path.unlink()
+        with self.assertRaisesRegex(InvalidInventoryError, "Cannot read the state file .*No such file"):
+            atm.dispense(500)
+
+    def test_a_save_that_fails_halfway_leaves_the_old_file_and_no_temporary_file(self):
+        atm = CashDispenser({500: 8}, store=InventoryStore(self.path))
+        before = self.path.read_bytes()
+        with mock.patch("dispenser.os.replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            atm.dispense(500)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["atm.json", "atm.json.lock"])
+        self.assertEqual(atm.inventory, {500: 8})
+
+    def test_devices_pipes_and_huge_files_are_refused_without_reading_them(self):
+        candidates = {"a device (/dev/null)": os.devnull}
+        if hasattr(os, "mkfifo"):
+            fifo = self.folder / "pipe.json"
+            os.mkfifo(fifo)
+            candidates["a named pipe"] = str(fifo)   # opening it would wait forever for a writer
+        huge = self.folder / "huge.json"
+        huge.write_text(" " * (InventoryStore.MAX_FILE_BYTES + 1) + '{"inventory": {"500": 1}}', encoding="utf-8")
+        candidates["a file over the size limit"] = str(huge)
+        for name, path in candidates.items():
+            with self.subTest(name), self.assertRaisesRegex(InvalidInventoryError, "not a regular file|too large"):
+                InventoryStore(path).load()
 
     def test_two_atms_sharing_one_file_never_pay_out_the_same_notes(self):
         # Two CashDispenser objects stand in for two processes: their thread locks are separate,

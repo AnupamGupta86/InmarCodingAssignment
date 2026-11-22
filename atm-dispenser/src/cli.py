@@ -4,6 +4,7 @@ you can watch the inventory go down.
 """
 
 import argparse
+import contextlib
 import os
 import sys
 from collections.abc import Iterable
@@ -27,6 +28,10 @@ LABEL_WIDTH = 22           # labels such as "Updated inventory:" are padded to t
 EXIT_OK = 0
 EXIT_NOT_DISPENSED = 1     # "Cannot dispense requested amount"
 EXIT_INVALID_INPUT = 2     # invalid input, or a state file that cannot be read or saved
+EXIT_CANCELLED = 130       # stopped with Ctrl+C (the usual code for that)
+
+# Used only when the terminal cannot show these characters (e.g. an ASCII or Latin-1 console).
+ASCII_FALLBACK = str.maketrans({"₹": "Rs.", "×": "x", "✓": "OK", "✗": "X", "…": "..."})
 
 QUIT_COMMANDS = ("q", "quit", "exit")
 INVENTORY_COMMANDS = ("i", "inventory")
@@ -40,7 +45,7 @@ EXAMPLES = """examples:
   python3 cli.py --state-file atm.json 2700             keep the inventory between runs
   python3 cli.py                                        interactive mode
 
-exit codes: 0 = dispensed, 1 = cannot dispense, 2 = invalid input"""
+exit codes: 0 = dispensed, 1 = cannot dispense, 2 = invalid input, 130 = cancelled (Ctrl+C)"""
 
 
 class CommandLine:
@@ -57,12 +62,13 @@ class CommandLine:
         """Run the program. Returns the exit code: the worst result of all withdrawals."""
         args = self._parser().parse_args(argv)
         state_file_existed = bool(args.state_file) and os.path.exists(args.state_file)
-        atm = self._create_atm(args.inventory or DEFAULT_INVENTORY, args.max_withdrawal, args.state_file)
+        inventory_text = DEFAULT_INVENTORY if args.inventory is None else args.inventory
+        atm = self._create_atm(inventory_text, args.max_withdrawal, args.state_file)
         if atm is None:
             return EXIT_INVALID_INPUT
 
         if state_file_existed:
-            ignored = " (--inventory is ignored: the saved notes are used)" if args.inventory else ""
+            ignored = " (--inventory is ignored: the saved notes are used)" if args.inventory is not None else ""
             self._print(f"Using the saved inventory from {args.state_file}{ignored}")
         elif args.state_file:
             self._print(f"Created the state file {args.state_file}")
@@ -240,8 +246,27 @@ class CommandLine:
         self._print(f"{heading}\n  ✗ {problem}", error=True)
 
     def _print(self, text: str, error: bool = False) -> None:
-        print(text, file=self.err if error else self.out)
+        stream = self.err if error else self.out
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        try:
+            text.encode(encoding)
+        except UnicodeEncodeError:  # e.g. "₹" on an ASCII console: print "Rs." rather than crash
+            text = text.translate(ASCII_FALLBACK).encode(encoding, "replace").decode(encoding)
+        print(text, file=stream)
+
+
+def main() -> int:
+    """Run the program; Ctrl+C or a closed output pipe ends it quietly instead of with a traceback."""
+    try:
+        return CommandLine().run()
+    except KeyboardInterrupt:  # Ctrl+C outside interactive mode, e.g. during a long calculation
+        print("\nCancelled.", file=sys.stderr)
+        return EXIT_CANCELLED
+    except BrokenPipeError:  # the output went to a program that stopped reading, e.g. "| head -1"
+        with contextlib.suppress(OSError, ValueError):  # stop Python reporting it again at exit
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return EXIT_OK
 
 
 if __name__ == "__main__":
-    sys.exit(CommandLine().run())
+    sys.exit(main())

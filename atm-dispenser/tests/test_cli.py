@@ -8,8 +8,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from cli import EXIT_INVALID_INPUT, EXIT_NOT_DISPENSED, EXIT_OK, CommandLine
+from cli import EXIT_CANCELLED, EXIT_INVALID_INPUT, EXIT_NOT_DISPENSED, EXIT_OK, CommandLine, main
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -193,6 +194,49 @@ class FriendlinessTests(unittest.TestCase):
             CommandLine().run(["--help"])
         self.assertIn("examples:", out.getvalue())
         self.assertIn("exit codes: 0 = dispensed, 1 = cannot dispense, 2 = invalid input", out.getvalue())
+
+
+class RobustnessTests(unittest.TestCase):
+    """Found by functional and non-functional testing: each used to misbehave."""
+
+    def test_an_explicitly_empty_inventory_is_rejected_not_replaced_by_the_default(self):
+        code, _, err = run(["--inventory", "", "100"])
+        self.assertEqual(code, EXIT_INVALID_INPUT)
+        self.assertIn("ATM inventory is empty", err)
+
+    def test_a_terminal_that_cannot_show_rupee_signs_gets_plain_ascii(self):
+        for encoding in ("ascii", "latin-1"):
+            with self.subTest(encoding=encoding):
+                raw = io.BytesIO()
+                out = io.TextIOWrapper(raw, encoding=encoding)
+                code = CommandLine(stdin=io.StringIO(), stdout=out, stderr=io.StringIO()).run(["2700", "250"])
+                out.flush()
+                text = raw.getvalue().decode(encoding)
+                self.assertEqual(code, EXIT_NOT_DISPENSED)
+                self.assertIn("OK Dispensed:", text)
+                self.assertIn("Rs.500 x 5, Rs.200 x 1 (Total notes dispensed: 6)", text)
+                self.assertIn("X Cannot dispense requested amount", text)
+
+    def test_ctrl_c_during_a_withdrawal_stops_quietly(self):
+        err = io.StringIO()
+        with mock.patch.object(CommandLine, "run", side_effect=KeyboardInterrupt), contextlib.redirect_stderr(err):
+            self.assertEqual(main(), EXIT_CANCELLED)
+        self.assertIn("Cancelled.", err.getvalue())
+
+    def test_output_piped_into_a_program_that_stops_reading_is_not_an_error(self):
+        amounts = ["100"] * 3000
+        process = subprocess.Popen(
+            [sys.executable, "atm-dispenser/src/cli.py", "--inventory", "100:5000", *amounts],
+            cwd=PROJECT_ROOT.parent, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        process.stdout.readline()   # like "| head -1": read one line, then stop reading
+        process.stdout.close()
+        stderr = process.stderr.read()
+        process.wait(timeout=30)
+        process.stderr.close()
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("BrokenPipeError", stderr)
 
 
 class StateFileTests(unittest.TestCase):
